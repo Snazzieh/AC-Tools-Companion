@@ -5,6 +5,7 @@
 #include "ble_connector.h"
 #include "ble_scanner.h"
 #include "hotspot_reader.h"
+#include "http_probe.h"
 #include "wifi_connector.h"
 
 class ControllerSession {
@@ -14,10 +15,12 @@ public:
     BleConnectResult connect(const ControllerInfo &controller);
     HotspotCredentials readHotspot(const ControllerInfo &controller);
     WifiConnectResult connectWifi(const HotspotCredentials &credentials);
+    HttpProbeResult probeHttp(const WifiConnectResult &wifi);
 
 private:
     BleScanner scanner;
     BleConnector connector;
     HotspotReader hotspotReader;
     WifiConnector wifiConnector;
+    HttpProbe httpProbe;
 };

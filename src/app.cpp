@@ -171,6 +171,33 @@ static void drawWifiResult(const WifiConnectResult &result) {
     }
 }
 
+static void drawHttpResult(const HttpProbeResult &result) {
+    drawHeader("HTTP");
+    tft.setTextSize(1);
+
+    tft.setTextColor(result.ok ? TFT_GREEN : TFT_RED, TFT_BLACK);
+    tft.setCursor(20, 70);
+    tft.println(result.ok ? "Controller HTTP OK" : "HTTP probe failed");
+
+    tft.setTextColor(TFT_WHITE, TFT_BLACK);
+    tft.setCursor(20, 105);
+    tft.print("Host: ");
+    tft.println(result.host);
+
+    tft.setCursor(20, 130);
+    tft.print("Path: ");
+    tft.println(result.path.length() > 0 ? result.path : "-");
+
+    tft.setCursor(20, 155);
+    tft.printf("Status: %d", result.statusCode);
+
+    if (result.error.length() > 0) {
+        tft.setTextColor(TFT_RED, TFT_BLACK);
+        tft.setCursor(20, 210);
+        tft.println(result.error);
+    }
+}
+
 void App::begin() {
     Serial.begin(115200);
     delay(300);
@@ -224,6 +251,18 @@ void App::begin() {
 
                 WifiConnectResult wifi = session.connectWifi(credentials);
                 drawWifiResult(wifi);
+
+                if (wifi.ok) {
+                    delay(1500);
+                    drawHeader("HTTP");
+                    tft.setTextColor(TFT_WHITE, TFT_BLACK);
+                    tft.setTextSize(1);
+                    tft.setCursor(20, 75);
+                    tft.println("Probing controller...");
+
+                    HttpProbeResult http = session.probeHttp(wifi);
+                    drawHttpResult(http);
+                }
             }
         }
     }

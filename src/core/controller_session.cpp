@@ -19,3 +19,7 @@ HotspotCredentials ControllerSession::readHotspot(const ControllerInfo &controll
 WifiConnectResult ControllerSession::connectWifi(const HotspotCredentials &credentials) {
     return wifiConnector.connect(credentials);
 }
+
+HttpProbeResult ControllerSession::probeHttp(const WifiConnectResult &wifi) {
+    return httpProbe.probe(wifi);
+}
