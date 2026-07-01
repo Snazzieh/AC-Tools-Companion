@@ -1,13 +1,11 @@
 #include "app.h"
-#include "core/ble_scanner.h"
-#include "core/hotspot_reader.h"
+#include "core/controller_session.h"
 
 #include <Arduino.h>
 #include <TFT_eSPI.h>
 
 static TFT_eSPI tft;
-static BleScanner bleScanner;
-static HotspotReader hotspotReader;
+static ControllerSession session;
 
 static void drawHeader(const String &title) {
     tft.fillScreen(TFT_BLACK);
@@ -84,7 +82,7 @@ static void drawResults(const std::vector<ControllerInfo> &controllers) {
     }
 }
 
-static void drawConnectResult(const HotspotCredentials &result) {
+static void drawConnectResult(const BleConnectResult &result) {
     drawHeader("BLE Test");
     tft.setTextSize(1);
 
@@ -124,10 +122,10 @@ void App::begin() {
     drawBoot();
     delay(1200);
 
-    bleScanner.begin();
+    session.begin();
 
     drawScanning();
-    auto controllers = bleScanner.scan(8);
+    auto controllers = session.scan(8);
     drawResults(controllers);
 
     if (!controllers.empty()) {
@@ -140,7 +138,7 @@ void App::begin() {
         tft.setCursor(20, 105);
         tft.println("Testing BLE link...");
 
-        HotspotCredentials result = hotspotReader.read(controllers[0]);
+        BleConnectResult result = session.connect(controllers[0]);
         drawConnectResult(result);
     }
 }

@@ -1,22 +1,19 @@
 #pragma once
 
 #include <Arduino.h>
+#include <NimBLEDevice.h>
 #include "controller_info.h"
 
-struct HotspotCredentials {
-    String ssid;
-    String password;
-    String ip;
-    bool ok = false;
-
+struct BleConnectResult {
     bool bleConnected = false;
     bool serviceFound = false;
     bool rxFound = false;
     bool txFound = false;
+    bool ok = false;
     String error;
 };
 
-class HotspotReader {
+class BleConnector {
 public:
-    HotspotCredentials read(const ControllerInfo &controller);
+    BleConnectResult testUart(const ControllerInfo &controller);
 };
