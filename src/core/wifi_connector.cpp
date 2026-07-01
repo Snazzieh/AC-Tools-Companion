@@ -1,5 +1,6 @@
 #include "wifi_connector.h"
 
+#include <NimBLEDevice.h>
 #include <WiFi.h>
 
 static const char *wifiStatusName(wl_status_t status) {
@@ -32,9 +33,13 @@ WifiConnectResult WifiConnector::connect(const HotspotCredentials &credentials, 
         return result;
     }
 
+    Serial.println("Deinitializing BLE before WiFi connect...");
+    NimBLEDevice::deinit(true);
+    delay(500);
+
     WiFi.persistent(false);
     WiFi.mode(WIFI_STA);
-    WiFi.setSleep(false);
+    WiFi.setSleep(true);
     WiFi.disconnect(true, true);
     delay(300);
 
