@@ -34,7 +34,7 @@ BleConnectResult BleConnector::testUart(const ControllerInfo &controller) {
     client->setConnectTimeout(8);
 
     Serial.println("Connecting BLE using NimBLEAdvertisedDevice...");
-    bool connected = client->connect(controller.advertisedDevice.get());
+    bool connected = client->connect(controller.advertisedDevice);
     if (!connected) {
         result.error = "BLE connect failed";
         Serial.printf("%s, lastError=%d\n", result.error.c_str(), client->getLastError());

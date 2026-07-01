@@ -48,34 +48,6 @@ static void addOrUpdateController(std::vector<ControllerInfo> &results, const Co
     results.push_back(item);
 }
 
-class ScannerCallbacks : public NimBLEScanCallbacks {
-public:
-    explicit ScannerCallbacks(std::vector<ControllerInfo> &results) : results(results) {}
-
-    void onResult(const NimBLEAdvertisedDevice *device) override {
-        std::string mfg = device->getManufacturerData();
-        if (mfg.length() < 3) return;
-
-        uint16_t manufacturerId = (static_cast<uint8_t>(mfg[1]) << 8) | static_cast<uint8_t>(mfg[0]);
-        if (manufacturerId != SYSTEMAIR_MANUFACTURER_ID) return;
-
-        ControllerInfo item;
-        item.name = extractNamePiece(mfg.substr(2));
-        item.address = device->getAddress().toString().c_str();
-        item.addressType = device->getAddress().getType();
-        item.rssi = device->getRSSI();
-        item.advertisedDevice = std::make_shared<NimBLEAdvertisedDevice>(*device);
-
-        addOrUpdateController(results, item);
-
-        Serial.printf("Found controller: %s | %s | type %u | %d dBm\n",
-                      item.name.c_str(), item.address.c_str(), item.addressType, item.rssi);
-    }
-
-private:
-    std::vector<ControllerInfo> &results;
-};
-
 void BleScanner::begin() {
     static bool initialized = false;
     if (initialized) return;
@@ -87,21 +59,41 @@ void BleScanner::begin() {
 
 std::vector<ControllerInfo> BleScanner::scan(uint32_t seconds) {
     std::vector<ControllerInfo> results;
-    ScannerCallbacks scannerCallbacks(results);
 
     NimBLEScan *scan = NimBLEDevice::getScan();
-    scan->setScanCallbacks(&scannerCallbacks, false);
+    scan->setScanCallbacks(nullptr, false);
     scan->setActiveScan(true);
     scan->setInterval(100);
     scan->setWindow(80);
 
     Serial.println("Starting scan...");
-    scan->start(seconds * 1000, false, true);
+    NimBLEScanResults scanResults = scan->getResults(seconds * 1000, false);
 
-    uint32_t waitStart = millis();
-    while (results.empty() && millis() - waitStart < 1500) {
-        delay(50);
-        yield();
+    for (int i = 0; i < scanResults.getCount(); i++) {
+        const NimBLEAdvertisedDevice *device = scanResults.getDevice(i);
+        if (!device) continue;
+
+        std::string mfg = device->getManufacturerData();
+        if (mfg.length() < 3) continue;
+
+        uint16_t manufacturerId = (static_cast<uint8_t>(mfg[1]) << 8) | static_cast<uint8_t>(mfg[0]);
+        if (manufacturerId != SYSTEMAIR_MANUFACTURER_ID) continue;
+
+        ControllerInfo item;
+        item.name = extractNamePiece(mfg.substr(2));
+        item.address = device->getAddress().toString().c_str();
+        item.addressType = device->getAddress().getType();
+        item.rssi = device->getRSSI();
+        item.advertisedDevice = device;
+
+        addOrUpdateController(results, item);
+
+        Serial.printf("Found controller: %s | %s | type %u | %d dBm | adv=%s\n",
+                      item.name.c_str(),
+                      item.address.c_str(),
+                      item.addressType,
+                      item.rssi,
+                      item.hasAdvertisedDevice() ? "yes" : "no");
     }
 
     std::sort(results.begin(), results.end(), [](const ControllerInfo &a, const ControllerInfo &b) {
