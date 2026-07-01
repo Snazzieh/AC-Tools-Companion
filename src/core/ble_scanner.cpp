@@ -62,11 +62,11 @@ std::vector<ControllerInfo> BleScanner::scan(uint32_t seconds) {
 
     NimBLEScan *scan = NimBLEDevice::getScan();
     scan->setScanCallbacks(nullptr, false);
-    scan->setActiveScan(true);
+    scan->setActiveScan(false);
     scan->setInterval(100);
     scan->setWindow(80);
 
-    Serial.println("Starting scan...");
+    Serial.println("Starting passive scan...");
     NimBLEScanResults scanResults = scan->getResults(seconds * 1000, false);
 
     for (int i = 0; i < scanResults.getCount(); i++) {
@@ -84,16 +84,20 @@ std::vector<ControllerInfo> BleScanner::scan(uint32_t seconds) {
         item.address = device->getAddress().toString().c_str();
         item.addressType = device->getAddress().getType();
         item.rssi = device->getRSSI();
+        item.connectable = device->isConnectable();
+        item.scannable = device->isScannable();
         item.advertisedDevice = device;
 
         addOrUpdateController(results, item);
 
-        Serial.printf("Found controller: %s | %s | type %u | %d dBm | adv=%s\n",
+        Serial.printf("Found controller: %s | %s | type %u | %d dBm | adv=%s | conn=%s | scan=%s\n",
                       item.name.c_str(),
                       item.address.c_str(),
                       item.addressType,
                       item.rssi,
-                      item.hasAdvertisedDevice() ? "yes" : "no");
+                      item.hasAdvertisedDevice() ? "yes" : "no",
+                      item.connectable ? "yes" : "no",
+                      item.scannable ? "yes" : "no");
     }
 
     std::sort(results.begin(), results.end(), [](const ControllerInfo &a, const ControllerInfo &b) {
