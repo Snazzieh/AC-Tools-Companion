@@ -1,8 +1,10 @@
 #include "ble_scanner.h"
+
 #include <NimBLEDevice.h>
+#include <algorithm>
 
 static const uint16_t SYSTEMAIR_MANUFACTURER_ID = 2447;
-static std::vector<ControllerInfo> foundControllers;
+static std::vector<ControllerInfo> scanResults;
 
 static String cleanText(String text) {
     text.replace("\0", "");
@@ -15,57 +17,76 @@ static String extractNamePiece(const std::string &data) {
     String current = "";
 
     for (uint8_t b : data) {
-        if (b >= 32 && b <= 126) current += (char)b;
-        else {
-            if (current.length() >= 2 && current.length() > best.length()) best = current;
+        if (b >= 32 && b <= 126) {
+            current += static_cast<char>(b);
+        } else {
+            if (current.length() >= 2 && current.length() > best.length()) {
+                best = current;
+            }
             current = "";
         }
     }
 
-    if (current.length() >= 2 && current.length() > best.length()) best = current;
+    if (current.length() >= 2 && current.length() > best.length()) {
+        best = current;
+    }
+
     return cleanText(best);
 }
 
-class ScanCallbacks : public NimBLEScanCallbacks {
+static void addOrUpdateController(const ControllerInfo &item) {
+    if (item.name.length() == 0 || item.address.length() == 0) return;
+
+    for (auto &existing : scanResults) {
+        if (existing.address == item.address) {
+            existing.name = item.name;
+            existing.rssi = item.rssi;
+            existing.addressType = item.addressType;
+            return;
+        }
+    }
+
+    scanResults.push_back(item);
+}
+
+class ScannerCallbacks : public NimBLEScanCallbacks {
 public:
     void onResult(const NimBLEAdvertisedDevice *device) override {
         std::string mfg = device->getManufacturerData();
         if (mfg.length() < 3) return;
 
-        uint16_t manufacturerId = ((uint8_t)mfg[1] << 8) | (uint8_t)mfg[0];
+        uint16_t manufacturerId = (static_cast<uint8_t>(mfg[1]) << 8) | static_cast<uint8_t>(mfg[0]);
         if (manufacturerId != SYSTEMAIR_MANUFACTURER_ID) return;
 
-        String name = extractNamePiece(mfg.substr(2));
-        if (name.length() == 0) return;
+        ControllerInfo item;
+        item.name = extractNamePiece(mfg.substr(2));
+        item.address = device->getAddress().toString().c_str();
+        item.addressType = device->getAddress().getType();
+        item.rssi = device->getRSSI();
 
-        String address = device->getAddress().toString().c_str();
-        int rssi = device->getRSSI();
+        addOrUpdateController(item);
 
-        if (foundControllers.empty()) {
-            foundControllers.push_back({name, address, rssi});
-        } else {
-            foundControllers[0].name = name;
-            foundControllers[0].address = address;
-            foundControllers[0].rssi = rssi;
-        }
-
-        Serial.printf("Found controller: %s | %s | %d dBm\n",
-                      name.c_str(), address.c_str(), rssi);
+        Serial.printf("Found controller: %s | %s | type %u | %d dBm\n",
+                      item.name.c_str(), item.address.c_str(), item.addressType, item.rssi);
     }
 };
 
-static ScanCallbacks scanCallbacks;
+static ScannerCallbacks scannerCallbacks;
 
 void BleScanner::begin() {
+    static bool initialized = false;
+    if (initialized) return;
+
     NimBLEDevice::init("AC Tools Companion");
     NimBLEDevice::setPower(ESP_PWR_LVL_P9);
+    initialized = true;
 }
 
 std::vector<ControllerInfo> BleScanner::scan(uint32_t seconds) {
-    foundControllers.clear();
+    scanResults.clear();
 
     NimBLEScan *scan = NimBLEDevice::getScan();
-    scan->setScanCallbacks(&scanCallbacks, false);
+    scan->setScanCallbacks(&scannerCallbacks, false);
     scan->setActiveScan(true);
     scan->setInterval(100);
     scan->setWindow(80);
@@ -74,13 +95,15 @@ std::vector<ControllerInfo> BleScanner::scan(uint32_t seconds) {
     scan->start(seconds * 1000, false, true);
 
     uint32_t waitStart = millis();
-    while (foundControllers.empty() && millis() - waitStart < 2000) {
+    while (scanResults.empty() && millis() - waitStart < 1500) {
         delay(50);
         yield();
     }
 
-    Serial.printf("Scan stopped. Returning %d controllers\n", foundControllers.size());
+    std::sort(scanResults.begin(), scanResults.end(), [](const ControllerInfo &a, const ControllerInfo &b) {
+        return a.rssi > b.rssi;
+    });
 
-    std::vector<ControllerInfo> result = foundControllers;
-    return result;
+    Serial.printf("Scan done. Returning %u controller(s)\n", static_cast<unsigned>(scanResults.size()));
+    return scanResults;
 }

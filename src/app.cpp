@@ -42,7 +42,6 @@ static void drawBoot() {
 
 static void drawScanning() {
     drawHeader("Scanning");
-
     tft.setTextColor(TFT_WHITE, TFT_BLACK);
     tft.setTextSize(1);
     tft.setCursor(20, 75);
@@ -51,21 +50,18 @@ static void drawScanning() {
 
 static void drawResults(const std::vector<ControllerInfo> &controllers) {
     drawHeader("Controllers");
-
     tft.setTextSize(1);
 
     if (controllers.empty()) {
         tft.setTextColor(TFT_WHITE, TFT_BLACK);
         tft.setCursor(20, 80);
         tft.println("No controllers found");
-
         tft.setCursor(20, 110);
         tft.println("Move closer and reboot.");
         return;
     }
 
     int y = 65;
-
     for (size_t i = 0; i < controllers.size() && i < 6; i++) {
         const auto &c = controllers[i];
 
@@ -77,22 +73,47 @@ static void drawResults(const std::vector<ControllerInfo> &controllers) {
         tft.setCursor(62, y);
 
         String safeName = c.name;
-        if (safeName.length() > 18) {
-            safeName = safeName.substring(0, 18);
-        }
-
+        if (safeName.length() > 18) safeName = safeName.substring(0, 18);
         tft.println(safeName);
 
         tft.setTextColor(TFT_DARKGREY, TFT_BLACK);
         tft.setCursor(62, y + 14);
-        tft.printf("%d dBm", c.rssi);
+        tft.printf("%d dBm  T%u", c.rssi, c.addressType);
 
         y += 42;
     }
 }
 
+static void drawConnectResult(const HotspotCredentials &result) {
+    drawHeader("BLE Test");
+    tft.setTextSize(1);
+
+    tft.setTextColor(result.bleConnected ? TFT_GREEN : TFT_RED, TFT_BLACK);
+    tft.setCursor(20, 70);
+    tft.println(result.bleConnected ? "BLE connected" : "BLE failed");
+
+    tft.setTextColor(result.serviceFound ? TFT_GREEN : TFT_RED, TFT_BLACK);
+    tft.setCursor(20, 100);
+    tft.println(result.serviceFound ? "UART service OK" : "UART service missing");
+
+    tft.setTextColor(result.rxFound ? TFT_GREEN : TFT_RED, TFT_BLACK);
+    tft.setCursor(20, 130);
+    tft.println(result.rxFound ? "RX char OK" : "RX char missing");
+
+    tft.setTextColor(result.txFound ? TFT_GREEN : TFT_RED, TFT_BLACK);
+    tft.setCursor(20, 160);
+    tft.println(result.txFound ? "TX char OK" : "TX char missing");
+
+    if (result.error.length() > 0) {
+        tft.setTextColor(TFT_RED, TFT_BLACK);
+        tft.setCursor(20, 210);
+        tft.println(result.error);
+    }
+}
+
 void App::begin() {
     Serial.begin(115200);
+    delay(300);
 
     pinMode(21, OUTPUT);
     digitalWrite(21, HIGH);
@@ -106,16 +127,24 @@ void App::begin() {
     bleScanner.begin();
 
     drawScanning();
-
     auto controllers = bleScanner.scan(8);
-
     drawResults(controllers);
 
     if (!controllers.empty()) {
         delay(1500);
-        hotspotReader.read(controllers[0].address);
+        drawHeader("Connecting");
+        tft.setTextColor(TFT_WHITE, TFT_BLACK);
+        tft.setTextSize(1);
+        tft.setCursor(20, 75);
+        tft.println(controllers[0].name);
+        tft.setCursor(20, 105);
+        tft.println("Testing BLE link...");
+
+        HotspotCredentials result = hotspotReader.read(controllers[0]);
+        drawConnectResult(result);
     }
 }
 
 void App::update() {
+    delay(20);
 }
