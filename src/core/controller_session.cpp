@@ -15,3 +15,7 @@ BleConnectResult ControllerSession::connect(const ControllerInfo &controller) {
 HotspotCredentials ControllerSession::readHotspot(const ControllerInfo &controller) {
     return hotspotReader.read(controller);
 }
+
+WifiConnectResult ControllerSession::connectWifi(const HotspotCredentials &credentials) {
+    return wifiConnector.connect(credentials);
+}

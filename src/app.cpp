@@ -138,6 +138,39 @@ static void drawHotspotResult(const HotspotCredentials &result) {
     }
 }
 
+static void drawWifiResult(const WifiConnectResult &result) {
+    drawHeader("WiFi");
+    tft.setTextSize(1);
+
+    tft.setTextColor(result.ok ? TFT_GREEN : TFT_RED, TFT_BLACK);
+    tft.setCursor(20, 70);
+    tft.println(result.ok ? "Hotspot connected" : "WiFi failed");
+
+    tft.setTextColor(TFT_WHITE, TFT_BLACK);
+    tft.setCursor(20, 105);
+    String ssid = result.ssid;
+    if (ssid.length() > 24) ssid = ssid.substring(0, 24);
+    tft.print("SSID: ");
+    tft.println(ssid);
+
+    tft.setCursor(20, 130);
+    tft.print("Local: ");
+    tft.println(result.localIp.length() > 0 ? result.localIp : "-");
+
+    tft.setCursor(20, 155);
+    tft.print("Gateway: ");
+    tft.println(result.gatewayIp.length() > 0 ? result.gatewayIp : "-");
+
+    tft.setCursor(20, 180);
+    tft.printf("RSSI: %d dBm", result.rssi);
+
+    if (result.error.length() > 0) {
+        tft.setTextColor(TFT_RED, TFT_BLACK);
+        tft.setCursor(20, 220);
+        tft.println(result.error);
+    }
+}
+
 void App::begin() {
     Serial.begin(115200);
     delay(300);
@@ -180,6 +213,18 @@ void App::begin() {
 
             HotspotCredentials credentials = session.readHotspot(controllers[0]);
             drawHotspotResult(credentials);
+
+            if (credentials.ok) {
+                delay(1500);
+                drawHeader("WiFi");
+                tft.setTextColor(TFT_WHITE, TFT_BLACK);
+                tft.setTextSize(1);
+                tft.setCursor(20, 75);
+                tft.println("Connecting hotspot...");
+
+                WifiConnectResult wifi = session.connectWifi(credentials);
+                drawWifiResult(wifi);
+            }
         }
     }
 }
