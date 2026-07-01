@@ -9,6 +9,8 @@ struct HttpProbeResult {
     String path;
     int statusCode = 0;
     String statusLine;
+    String protocol;
+    String accept;
     String sample;
     String error;
 };

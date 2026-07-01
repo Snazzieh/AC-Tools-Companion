@@ -2,13 +2,13 @@
 
 #include <WiFiClient.h>
 
-static const char *PROBE_PATHS[] = {
+static const char *EXOSOCKET_PATHS[] = {
     "/",
-    "/api",
-    "/api/v1",
-    "/api/v1/version",
-    "/api/v1/system"
+    "/_EXOsocket",
+    "/_EXOsocket/"
 };
+static const char *EXOSOCKET_PROTOCOL = "EXOsocket";
+static const char *WS_KEY = "dGhlIHNhbXBsZSBub25jZQ==";
 
 static int parseStatusCode(const String &statusLine) {
     int firstSpace = statusLine.indexOf(' ');
@@ -25,7 +25,7 @@ static String readLine(WiFiClient &client, uint32_t timeoutMs) {
             char c = static_cast<char>(client.read());
             if (c == '\r') continue;
             if (c == '\n') return line;
-            if (line.length() < 160) line += c;
+            if (line.length() < 180) line += c;
         }
         delay(5);
         yield();
@@ -34,25 +34,30 @@ static String readLine(WiFiClient &client, uint32_t timeoutMs) {
     return line;
 }
 
-static String readSample(WiFiClient &client, uint32_t timeoutMs) {
-    String sample;
-    uint32_t start = millis();
+static void captureHeader(HttpProbeResult &result, const String &line) {
+    String lower = line;
+    lower.toLowerCase();
 
-    while (millis() - start < timeoutMs && sample.length() < 160) {
-        while (client.available() && sample.length() < 160) {
-            char c = static_cast<char>(client.read());
-            if (c >= 32 && c <= 126) {
-                sample += c;
-            } else if (c == '\n' || c == '\r' || c == '\t') {
-                sample += ' ';
-            }
-        }
-        delay(5);
-        yield();
+    if (lower.startsWith("sec-websocket-protocol:")) {
+        result.protocol = line.substring(line.indexOf(':') + 1);
+        result.protocol.trim();
+    } else if (lower.startsWith("sec-websocket-accept:")) {
+        result.accept = line.substring(line.indexOf(':') + 1);
+        result.accept.trim();
     }
+}
 
-    sample.trim();
-    return sample;
+static void sendWebSocketHandshake(WiFiClient &client, const String &host, const char *path) {
+    client.printf("GET %s HTTP/1.1\r\n", path);
+    client.printf("Host: %s\r\n", host.c_str());
+    client.print("Upgrade: websocket\r\n");
+    client.print("Connection: Upgrade\r\n");
+    client.printf("Sec-WebSocket-Key: %s\r\n", WS_KEY);
+    client.print("Sec-WebSocket-Version: 13\r\n");
+    client.printf("Sec-WebSocket-Protocol: %s\r\n", EXOSOCKET_PROTOCOL);
+    client.print("Origin: http://");
+    client.print(host);
+    client.print("\r\n\r\n");
 }
 
 static HttpProbeResult probePath(const String &host, const char *path) {
@@ -61,42 +66,53 @@ static HttpProbeResult probePath(const String &host, const char *path) {
     result.path = path;
 
     WiFiClient client;
-    client.setTimeout(4000);
+    client.setTimeout(5000);
 
-    Serial.printf("HTTP probe GET http://%s%s\n", host.c_str(), path);
-    if (!client.connect(host.c_str(), 80)) {
+    Serial.printf("WS probe ws://%s%s protocol=%s\n", result.host.c_str(), result.path.c_str(), EXOSOCKET_PROTOCOL);
+    if (!client.connect(result.host.c_str(), 80)) {
         result.error = "TCP connect failed";
         Serial.println(result.error);
         return result;
     }
 
-    client.printf("GET %s HTTP/1.0\r\n\r\n", path);
+    sendWebSocketHandshake(client, result.host, path);
 
-    result.statusLine = readLine(client, 4000);
+    result.statusLine = readLine(client, 5000);
     result.statusCode = parseStatusCode(result.statusLine);
 
-    bool headersDone = false;
     uint32_t headerStart = millis();
-    while (millis() - headerStart < 4000) {
+    while (millis() - headerStart < 5000) {
         String line = readLine(client, 1000);
-        if (line.length() == 0) {
-            headersDone = true;
-            break;
+        if (line.length() == 0) break;
+        captureHeader(result, line);
+        Serial.printf("WS header: %s\n", line.c_str());
+    }
+
+    result.ok = result.statusCode == 101;
+
+    if (!result.ok) {
+        uint32_t bodyStart = millis();
+        while (millis() - bodyStart < 1000 && result.sample.length() < 160) {
+            while (client.available() && result.sample.length() < 160) {
+                char c = static_cast<char>(client.read());
+                if (c >= 32 && c <= 126) result.sample += c;
+                else if (c == '\n' || c == '\r' || c == '\t') result.sample += ' ';
+            }
+            delay(5);
+            yield();
         }
+        result.sample.trim();
+        if (result.error.length() == 0) result.error = "WebSocket upgrade failed";
     }
 
-    if (headersDone) {
-        result.sample = readSample(client, 1000);
-    }
-
-    client.stop();
-
-    result.ok = result.statusCode >= 200 && result.statusCode < 400;
-    Serial.printf("HTTP result path=%s status=%d line=%s sample=%s\n",
-                  path,
+    Serial.printf("WS result status=%d line=%s protocol=%s accept=%s sample=%s\n",
                   result.statusCode,
                   result.statusLine.c_str(),
+                  result.protocol.c_str(),
+                  result.accept.c_str(),
                   result.sample.c_str());
+
+    client.stop();
     return result;
 }
 
@@ -104,7 +120,7 @@ HttpProbeResult HttpProbe::probe(const WifiConnectResult &wifi) {
     HttpProbeResult last;
     String host = wifi.gatewayIp.length() > 0 ? wifi.gatewayIp : "192.168.254.1";
 
-    Serial.println("=== Controller HTTP probe ===");
+    Serial.println("=== EXOsocket WebSocket probe ===");
     Serial.printf("WiFi ok=%s host=%s\n", wifi.ok ? "yes" : "no", host.c_str());
 
     if (!wifi.ok) {
@@ -114,16 +130,11 @@ HttpProbeResult HttpProbe::probe(const WifiConnectResult &wifi) {
         return last;
     }
 
-    for (const char *path : PROBE_PATHS) {
+    for (const char *path : EXOSOCKET_PATHS) {
         last = probePath(host, path);
-        if (last.statusCode >= 200 && last.statusCode < 400) {
-            return last;
-        }
-        delay(150);
+        if (last.ok) return last;
+        delay(200);
     }
 
-    if (last.error.length() == 0 && last.statusCode == 0) {
-        last.error = "No HTTP response";
-    }
     return last;
 }

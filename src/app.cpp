@@ -172,12 +172,12 @@ static void drawWifiResult(const WifiConnectResult &result) {
 }
 
 static void drawHttpResult(const HttpProbeResult &result) {
-    drawHeader("HTTP");
+    drawHeader("EXOsocket");
     tft.setTextSize(1);
 
     tft.setTextColor(result.ok ? TFT_GREEN : TFT_RED, TFT_BLACK);
     tft.setCursor(20, 70);
-    tft.println(result.ok ? "Controller HTTP OK" : "HTTP probe failed");
+    tft.println(result.ok ? "WebSocket OK" : "WebSocket failed");
 
     tft.setTextColor(TFT_WHITE, TFT_BLACK);
     tft.setCursor(20, 105);
@@ -254,11 +254,11 @@ void App::begin() {
 
                 if (wifi.ok) {
                     delay(1500);
-                    drawHeader("HTTP");
+                    drawHeader("EXOsocket");
                     tft.setTextColor(TFT_WHITE, TFT_BLACK);
                     tft.setTextSize(1);
                     tft.setCursor(20, 75);
-                    tft.println("Probing controller...");
+                    tft.println("Testing WebSocket...");
 
                     HttpProbeResult http = session.probeHttp(wifi);
                     drawHttpResult(http);
