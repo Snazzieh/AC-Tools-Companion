@@ -17,6 +17,12 @@ static const uint8_t SLIP_ESC_ESC = 0xDD;
 static const uint8_t DATA_AUTH = 3;
 static const uint8_t DATA_HOTSPOT = 4;
 
+struct ProtocolFrame {
+    uint8_t type = 0;
+    uint8_t frameId = 0;
+    std::vector<uint8_t> payload;
+};
+
 struct SlipReceiver {
     std::vector<uint8_t> current;
     std::vector<uint8_t> frame;
@@ -66,9 +72,9 @@ struct SlipReceiver {
     }
 };
 
-static std::vector<uint8_t> slipEncode(uint8_t type, const std::vector<uint8_t> &payload) {
+static std::vector<uint8_t> slipEncode(uint8_t type, uint8_t frameId, const std::vector<uint8_t> &payload) {
     std::vector<uint8_t> out;
-    out.reserve(payload.size() + 4);
+    out.reserve(payload.size() + 5);
     out.push_back(SLIP_END);
 
     auto append = [&out](uint8_t b) {
@@ -84,17 +90,28 @@ static std::vector<uint8_t> slipEncode(uint8_t type, const std::vector<uint8_t> 
     };
 
     append(type);
+    append(frameId);
     for (uint8_t b : payload) append(b);
     out.push_back(SLIP_END);
     return out;
 }
 
-static bool writeSlipFrame(NimBLERemoteCharacteristic *rxChar, uint8_t type, const std::vector<uint8_t> &payload) {
-    std::vector<uint8_t> frame = slipEncode(type, payload);
+static bool parseProtocolFrame(const std::vector<uint8_t> &decoded, ProtocolFrame &frame) {
+    if (decoded.size() < 2) return false;
+
+    frame.type = decoded[0] & 0x3F;
+    frame.frameId = decoded[1];
+    frame.payload.assign(decoded.begin() + 2, decoded.end());
+    return true;
+}
+
+static bool writeSlipFrame(NimBLERemoteCharacteristic *rxChar, uint8_t type, uint8_t frameId, const std::vector<uint8_t> &payload) {
+    std::vector<uint8_t> frame = slipEncode(type, frameId, payload);
     const size_t chunkSize = 20;
 
-    Serial.printf("Writing SLIP frame type=%u payload=%u encoded=%u\n",
+    Serial.printf("Writing SLIP frame type=%u frameId=%u payload=%u encoded=%u\n",
                   type,
+                  frameId,
                   static_cast<unsigned>(payload.size()),
                   static_cast<unsigned>(frame.size()));
 
@@ -110,16 +127,22 @@ static bool writeSlipFrame(NimBLERemoteCharacteristic *rxChar, uint8_t type, con
     return true;
 }
 
-static bool waitForFrame(SlipReceiver &receiver, std::vector<uint8_t> &frame, uint32_t timeoutMs) {
+static bool waitForFrame(SlipReceiver &receiver, ProtocolFrame &frame, uint32_t timeoutMs) {
     uint32_t start = millis();
     while (millis() - start < timeoutMs) {
         if (receiver.frameReady) {
-            frame = receiver.frame;
+            std::vector<uint8_t> decoded = receiver.frame;
             receiver.frame.clear();
             receiver.frameReady = false;
-            Serial.printf("Received SLIP frame len=%u type=%u\n",
-                          static_cast<unsigned>(frame.size()),
-                          frame.empty() ? 255 : frame[0]);
+            if (!parseProtocolFrame(decoded, frame)) {
+                Serial.printf("Received invalid SLIP frame len=%u\n", static_cast<unsigned>(decoded.size()));
+                continue;
+            }
+            Serial.printf("Received SLIP frame len=%u type=%u frameId=%u payload=%u\n",
+                          static_cast<unsigned>(decoded.size()),
+                          frame.type,
+                          frame.frameId,
+                          static_cast<unsigned>(frame.payload.size()));
             return true;
         }
         delay(20);
@@ -239,6 +262,44 @@ static bool parseHotspotMap(const std::vector<uint8_t> &payload, HotspotCredenti
     return credentials.ssid.length() > 0 && credentials.password.length() > 0;
 }
 
+static bool requestHotspot(NimBLERemoteCharacteristic *rxChar, SlipReceiver &receiver, uint8_t frameId, HotspotCredentials &result) {
+    receiver.reset();
+    if (!writeSlipFrame(rxChar, DATA_HOTSPOT, frameId, std::vector<uint8_t>{0x00})) {
+        result.error = "Hotspot request write failed";
+        return false;
+    }
+
+    ProtocolFrame frame;
+    if (!waitForFrame(receiver, frame, 10000)) {
+        result.error = "Hotspot response timeout";
+        Serial.println(result.error);
+        return false;
+    }
+
+    if (frame.type != DATA_HOTSPOT) {
+        result.error = "Invalid hotspot response";
+        Serial.printf("%s type=%u frameId=%u payload=%u\n",
+                      result.error.c_str(),
+                      frame.type,
+                      frame.frameId,
+                      static_cast<unsigned>(frame.payload.size()));
+        return false;
+    }
+
+    if (!parseHotspotMap(frame.payload, result)) {
+        result.error = "Hotspot parse failed";
+        Serial.println(result.error);
+        return false;
+    }
+
+    result.ok = true;
+    Serial.printf("Hotspot OK SSID=%s ip=%s passwordLen=%u\n",
+                  result.ssid.c_str(),
+                  result.ip.c_str(),
+                  static_cast<unsigned>(result.password.length()));
+    return true;
+}
+
 HotspotCredentials HotspotReader::read(const ControllerInfo &controller) {
     HotspotCredentials result;
 
@@ -328,15 +389,17 @@ HotspotCredentials HotspotReader::read(const ControllerInfo &controller) {
         return result;
     }
 
+    uint8_t nextFrameId = 1;
+
     receiver.reset();
-    if (!writeSlipFrame(rxChar, DATA_AUTH, std::vector<uint8_t>{0x00})) {
+    if (!writeSlipFrame(rxChar, DATA_AUTH, nextFrameId++, std::vector<uint8_t>{0x00})) {
         result.error = "Auth init write failed";
         client->disconnect();
         NimBLEDevice::deleteClient(client);
         return result;
     }
 
-    std::vector<uint8_t> frame;
+    ProtocolFrame frame;
     if (!waitForFrame(receiver, frame, 10000)) {
         result.error = "Auth challenge timeout";
         Serial.println(result.error);
@@ -345,25 +408,49 @@ HotspotCredentials HotspotReader::read(const ControllerInfo &controller) {
         return result;
     }
 
-    if (frame.size() < 33 || frame[0] != DATA_AUTH) {
+    if (frame.type != DATA_AUTH) {
         result.error = "Invalid auth challenge";
-        Serial.printf("%s size=%u type=%u\n",
+        Serial.printf("%s type=%u frameId=%u payload=%u\n",
                       result.error.c_str(),
-                      static_cast<unsigned>(frame.size()),
-                      frame.empty() ? 255 : frame[0]);
+                      frame.type,
+                      frame.frameId,
+                      static_cast<unsigned>(frame.payload.size()));
         client->disconnect();
         NimBLEDevice::deleteClient(client);
         return result;
     }
 
-    std::vector<uint8_t> challenge(frame.begin() + 1, frame.end());
-    Serial.printf("Auth challenge bytes=%u\n", static_cast<unsigned>(challenge.size()));
+    if (frame.payload.size() == 1 && frame.payload[0] == 0x01) {
+        Serial.println("Auth OK");
+        if (!requestHotspot(rxChar, receiver, nextFrameId++, result)) {
+            client->disconnect();
+            NimBLEDevice::deleteClient(client);
+            return result;
+        }
+
+        txChar->unsubscribe(false);
+        client->disconnect();
+        NimBLEDevice::deleteClient(client);
+        return result;
+    }
+
+    if (frame.payload.size() != 32) {
+        result.error = "Unknown auth payload";
+        Serial.printf("%s size=%u\n",
+                      result.error.c_str(),
+                      static_cast<unsigned>(frame.payload.size()));
+        client->disconnect();
+        NimBLEDevice::deleteClient(client);
+        return result;
+    }
+
+    Serial.printf("Auth challenge bytes=%u\n", static_cast<unsigned>(frame.payload.size()));
 
     std::vector<uint8_t> digest;
-    sha256SecretChallenge(challenge, digest);
+    sha256SecretChallenge(frame.payload, digest);
 
     receiver.reset();
-    if (!writeSlipFrame(rxChar, DATA_AUTH, digest)) {
+    if (!writeSlipFrame(rxChar, DATA_AUTH, nextFrameId++, digest)) {
         result.error = "Auth response write failed";
         client->disconnect();
         NimBLEDevice::deleteClient(client);
@@ -378,13 +465,14 @@ HotspotCredentials HotspotReader::read(const ControllerInfo &controller) {
         return result;
     }
 
-    if (frame.size() < 2 || frame[0] != DATA_AUTH || frame[1] != 0x01) {
+    if (frame.type != DATA_AUTH || frame.payload.size() != 1 || frame.payload[0] != 0x01) {
         result.error = "Auth rejected";
-        Serial.printf("%s size=%u type=%u payload0=%u\n",
+        Serial.printf("%s type=%u frameId=%u payload=%u payload0=%u\n",
                       result.error.c_str(),
-                      static_cast<unsigned>(frame.size()),
-                      frame.empty() ? 255 : frame[0],
-                      frame.size() > 1 ? frame[1] : 255);
+                      frame.type,
+                      frame.frameId,
+                      static_cast<unsigned>(frame.payload.size()),
+                      frame.payload.empty() ? 255 : frame.payload[0]);
         client->disconnect();
         NimBLEDevice::deleteClient(client);
         return result;
@@ -392,47 +480,11 @@ HotspotCredentials HotspotReader::read(const ControllerInfo &controller) {
 
     Serial.println("Auth OK");
 
-    receiver.reset();
-    if (!writeSlipFrame(rxChar, DATA_HOTSPOT, std::vector<uint8_t>{0x00})) {
-        result.error = "Hotspot request write failed";
+    if (!requestHotspot(rxChar, receiver, nextFrameId++, result)) {
         client->disconnect();
         NimBLEDevice::deleteClient(client);
         return result;
     }
-
-    if (!waitForFrame(receiver, frame, 10000)) {
-        result.error = "Hotspot response timeout";
-        Serial.println(result.error);
-        client->disconnect();
-        NimBLEDevice::deleteClient(client);
-        return result;
-    }
-
-    if (frame.size() < 2 || frame[0] != DATA_HOTSPOT) {
-        result.error = "Invalid hotspot response";
-        Serial.printf("%s size=%u type=%u\n",
-                      result.error.c_str(),
-                      static_cast<unsigned>(frame.size()),
-                      frame.empty() ? 255 : frame[0]);
-        client->disconnect();
-        NimBLEDevice::deleteClient(client);
-        return result;
-    }
-
-    std::vector<uint8_t> payload(frame.begin() + 1, frame.end());
-    if (!parseHotspotMap(payload, result)) {
-        result.error = "Hotspot parse failed";
-        Serial.println(result.error);
-        client->disconnect();
-        NimBLEDevice::deleteClient(client);
-        return result;
-    }
-
-    result.ok = true;
-    Serial.printf("Hotspot OK SSID=%s ip=%s passwordLen=%u\n",
-                  result.ssid.c_str(),
-                  result.ip.c_str(),
-                  static_cast<unsigned>(result.password.length()));
 
     txChar->unsubscribe(false);
     client->disconnect();
