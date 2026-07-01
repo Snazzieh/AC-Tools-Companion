@@ -11,3 +11,7 @@ std::vector<ControllerInfo> ControllerSession::scan(uint32_t seconds) {
 BleConnectResult ControllerSession::connect(const ControllerInfo &controller) {
     return connector.testUart(controller);
 }
+
+HotspotCredentials ControllerSession::readHotspot(const ControllerInfo &controller) {
+    return hotspotReader.read(controller);
+}

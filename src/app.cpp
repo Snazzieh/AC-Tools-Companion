@@ -109,6 +109,35 @@ static void drawConnectResult(const BleConnectResult &result) {
     }
 }
 
+static void drawHotspotResult(const HotspotCredentials &result) {
+    drawHeader("Hotspot");
+    tft.setTextSize(1);
+
+    tft.setTextColor(result.ok ? TFT_GREEN : TFT_RED, TFT_BLACK);
+    tft.setCursor(20, 70);
+    tft.println(result.ok ? "Credentials OK" : "Hotspot failed");
+
+    tft.setTextColor(TFT_WHITE, TFT_BLACK);
+    tft.setCursor(20, 105);
+    String ssid = result.ssid;
+    if (ssid.length() > 24) ssid = ssid.substring(0, 24);
+    tft.print("SSID: ");
+    tft.println(ssid);
+
+    tft.setCursor(20, 130);
+    tft.print("IP: ");
+    tft.println(result.ip.length() > 0 ? result.ip : "192.168.10.1");
+
+    tft.setCursor(20, 155);
+    tft.printf("Password: %u chars", static_cast<unsigned>(result.password.length()));
+
+    if (result.error.length() > 0) {
+        tft.setTextColor(TFT_RED, TFT_BLACK);
+        tft.setCursor(20, 210);
+        tft.println(result.error);
+    }
+}
+
 void App::begin() {
     Serial.begin(115200);
     delay(300);
@@ -140,6 +169,18 @@ void App::begin() {
 
         BleConnectResult result = session.connect(controllers[0]);
         drawConnectResult(result);
+
+        if (result.ok) {
+            delay(1500);
+            drawHeader("Hotspot");
+            tft.setTextColor(TFT_WHITE, TFT_BLACK);
+            tft.setTextSize(1);
+            tft.setCursor(20, 75);
+            tft.println("Reading credentials...");
+
+            HotspotCredentials credentials = session.readHotspot(controllers[0]);
+            drawHotspotResult(credentials);
+        }
     }
 }
 
