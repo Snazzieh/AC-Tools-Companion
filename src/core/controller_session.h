@@ -4,6 +4,7 @@
 #include <vector>
 #include "ble_connector.h"
 #include "ble_scanner.h"
+#include "exosocket_gateway.h"
 #include "hotspot_reader.h"
 #include "http_probe.h"
 #include "wifi_connector.h"
@@ -16,6 +17,8 @@ public:
     HotspotCredentials readHotspot(const ControllerInfo &controller);
     WifiConnectResult connectWifi(const HotspotCredentials &credentials);
     HttpProbeResult probeHttp(const WifiConnectResult &wifi);
+    ExoSocketGatewayResult startGateway(const WifiConnectResult &wifi);
+    void updateGateway();
 
 private:
     BleScanner scanner;
@@ -23,4 +26,5 @@ private:
     HotspotReader hotspotReader;
     WifiConnector wifiConnector;
     HttpProbe httpProbe;
+    ExoSocketGateway gateway;
 };

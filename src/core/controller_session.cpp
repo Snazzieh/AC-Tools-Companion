@@ -23,3 +23,11 @@ WifiConnectResult ControllerSession::connectWifi(const HotspotCredentials &crede
 HttpProbeResult ControllerSession::probeHttp(const WifiConnectResult &wifi) {
     return httpProbe.probe(wifi);
 }
+
+ExoSocketGatewayResult ControllerSession::startGateway(const WifiConnectResult &wifi) {
+    return gateway.begin(wifi);
+}
+
+void ControllerSession::updateGateway() {
+    gateway.update();
+}
