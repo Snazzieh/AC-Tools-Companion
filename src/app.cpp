@@ -1,201 +1,252 @@
 #include "app.h"
 #include "core/controller_session.h"
+#include "ui/touch_input.h"
 
 #include <Arduino.h>
 #include <TFT_eSPI.h>
+#include <vector>
 
-static TFT_eSPI tft;
-static ControllerSession session;
+namespace {
+TFT_eSPI tft;
+TouchInput touch;
+ControllerSession session;
 
-static void drawHeader(const String &title) {
-    tft.fillScreen(TFT_BLACK);
-    tft.setTextColor(TFT_CYAN, TFT_BLACK);
-    tft.setTextSize(2);
-    tft.setCursor(18, 20);
-    tft.println(title);
+constexpr uint16_t visible(uint16_t color) {
+    return static_cast<uint16_t>(~color);
 }
 
-static String signalText(int rssi) {
+constexpr uint16_t BG = visible(TFT_BLACK);
+constexpr uint16_t SURFACE = visible(0x1082);
+constexpr uint16_t PANEL = visible(TFT_BLACK);
+constexpr uint16_t PANEL_2 = visible(0x2965);
+constexpr uint16_t TEXT = visible(TFT_WHITE);
+constexpr uint16_t MUTED = visible(0x9CF3);
+constexpr uint16_t ACCENT = 0x245F;
+constexpr uint16_t ACCENT_DARK = 0x21F5;
+constexpr uint16_t OK = visible(0x47E9);
+constexpr uint16_t WARN = visible(0xFDA0);
+constexpr uint16_t FAIL = visible(0xF986);
+
+struct ButtonRect {
+    int16_t x;
+    int16_t y;
+    int16_t w;
+    int16_t h;
+};
+
+const ButtonRect primaryButton{28, 198, 264, 35};
+
+enum class ScreenMode {
+    Home,
+    Running,
+    Done
+};
+
+ScreenMode screenMode = ScreenMode::Home;
+bool flowRequested = false;
+bool flowComplete = false;
+String finalTitle;
+String finalDetail;
+bool finalOk = false;
+
+bool inRect(const TouchPoint &point, const ButtonRect &rect) {
+    return point.pressed && point.x >= rect.x && point.x < rect.x + rect.w && point.y >= rect.y && point.y < rect.y + rect.h;
+}
+
+void drawTextFit(const String &text, int16_t x, int16_t y, uint16_t color, uint8_t size, uint16_t bg = BG) {
+    tft.setTextColor(color, bg);
+    tft.setTextSize(size);
+    tft.setCursor(x, y);
+    tft.print(text);
+}
+
+void drawCenteredText(const String &text, int16_t x, int16_t y, int16_t w, uint16_t color, uint8_t size, uint16_t bg) {
+    tft.setTextColor(color, bg);
+    tft.setTextSize(size);
+    int16_t textW = text.length() * 6 * size;
+    int16_t cursorX = x + (w - textW) / 2;
+    tft.setCursor(cursorX < x + 4 ? x + 4 : cursorX, y);
+    tft.print(text);
+}
+
+void drawPanel(int16_t x, int16_t y, int16_t w, int16_t h) {
+    tft.fillRoundRect(x, y, w, h, 7, SURFACE);
+    tft.drawRoundRect(x, y, w, h, 7, PANEL_2);
+}
+
+void drawButton(const ButtonRect &rect, const String &label, uint16_t fill, uint16_t outline = TEXT) {
+    tft.fillRoundRect(rect.x, rect.y, rect.w, rect.h, 7, fill);
+    tft.drawRoundRect(rect.x, rect.y, rect.w, rect.h, 7, outline);
+    drawCenteredText(label, rect.x, rect.y + 10, rect.w, TEXT, 2, fill);
+}
+
+void drawShell(const String &title, const String &subtitle = "") {
+    tft.fillScreen(BG);
+    tft.fillRect(0, 0, 320, 34, PANEL);
+    tft.drawFastVLine(0, 0, 240, PANEL_2);
+    tft.fillRect(0, 34, 320, 1, PANEL_2);
+    tft.fillRoundRect(9, 8, 18, 18, 3, ACCENT);
+    drawTextFit("AC", 13, 14, TEXT, 1, ACCENT);
+    drawTextFit("AC Tools", 36, 10, TEXT, 1, PANEL);
+    drawTextFit("Companion", 238, 10, MUTED, 1, PANEL);
+    drawTextFit(title, 14, 52, TEXT, 2);
+    if (subtitle.length() > 0) {
+        drawTextFit(subtitle, 16, 80, MUTED, 1);
+    }
+}
+
+void drawStatusRow(int16_t y, const String &label, const String &value, uint16_t color) {
+    tft.fillRoundRect(14, y, 292, 25, 5, SURFACE);
+    tft.drawFastVLine(132, y + 5, 15, PANEL_2);
+    drawTextFit(label, 24, y + 8, MUTED, 1, SURFACE);
+    drawTextFit(value, 146, y + 8, color, 1, SURFACE);
+}
+
+String signalText(int rssi) {
     if (rssi >= -60) return "GOOD";
     if (rssi >= -75) return "MID";
     return "LOW";
 }
 
-static void drawBoot() {
-    tft.fillScreen(TFT_BLACK);
-
-    tft.setTextColor(TFT_CYAN, TFT_BLACK);
-    tft.setTextSize(2);
-    tft.setCursor(22, 45);
-    tft.println("AC Tools");
-
-    tft.setTextColor(TFT_WHITE, TFT_BLACK);
-    tft.setCursor(22, 80);
-    tft.println("Companion");
-
-    tft.setTextSize(1);
-    tft.setCursor(22, 135);
-    tft.println("Standalone service tool");
+String shortText(String text, uint8_t maxLen) {
+    if (text.length() <= maxLen) return text;
+    return text.substring(0, maxLen - 1) + "~";
 }
 
-static void drawScanning() {
-    drawHeader("Scanning");
-    tft.setTextColor(TFT_WHITE, TFT_BLACK);
-    tft.setTextSize(1);
-    tft.setCursor(20, 75);
-    tft.println("Looking for Access controllers...");
+void drawHome() {
+    screenMode = ScreenMode::Home;
+    flowRequested = false;
+    flowComplete = false;
+
+    drawShell("Controller Connect", "Scan nearby Systemair Access controllers.");
+    drawPanel(14, 96, 292, 52);
+    drawTextFit("Professional Service Tools", 26, 111, ACCENT, 1, SURFACE);
+    drawTextFit("BLE  /  Hotspot  /  WiFi  /  EXOsocket", 26, 132, MUTED, 1, SURFACE);
+    drawButton(primaryButton, "Open", ACCENT_DARK, PANEL_2);
 }
 
-static void drawResults(const std::vector<ControllerInfo> &controllers) {
-    drawHeader("Controllers");
-    tft.setTextSize(1);
+void drawProgress(const String &title, const String &line1, const String &line2 = "") {
+    screenMode = ScreenMode::Running;
+    drawShell(title, line1);
+    if (line2.length() > 0) {
+        drawTextFit(line2, 16, 98, MUTED, 1);
+    }
+    drawPanel(32, 143, 256, 42);
+    tft.fillRoundRect(50, 159, 220, 8, 4, PANEL_2);
+    tft.fillRoundRect(50, 159, 92, 8, 4, ACCENT);
+    drawCenteredText("Working", 32, 199, 256, MUTED, 1, BG);
+}
+
+void drawControllerList(const std::vector<ControllerInfo> &controllers) {
+    drawShell("Controllers", controllers.empty() ? "No controller found." : "Best signal selected automatically.");
 
     if (controllers.empty()) {
-        tft.setTextColor(TFT_WHITE, TFT_BLACK);
-        tft.setCursor(20, 80);
-        tft.println("No controllers found");
-        tft.setCursor(20, 110);
-        tft.println("Move closer and reboot.");
+        drawStatusRow(108, "Result", "No controllers", FAIL);
         return;
     }
 
-    int y = 65;
-    for (size_t i = 0; i < controllers.size() && i < 6; i++) {
+    int16_t y = 92;
+    for (size_t i = 0; i < controllers.size() && i < 3; i++) {
         const auto &c = controllers[i];
-
-        tft.setTextColor(TFT_GREEN, TFT_BLACK);
-        tft.setCursor(15, y);
-        tft.print(signalText(c.rssi));
-
-        tft.setTextColor(TFT_WHITE, TFT_BLACK);
-        tft.setCursor(62, y);
-
-        String safeName = c.name;
-        if (safeName.length() > 18) safeName = safeName.substring(0, 18);
-        tft.println(safeName);
-
-        tft.setTextColor(TFT_DARKGREY, TFT_BLACK);
-        tft.setCursor(62, y + 14);
-        tft.printf("%d dBm  T%u", c.rssi, c.addressType);
-
+        drawPanel(14, y, 292, 34);
+        drawTextFit(shortText(c.name, 22), 24, y + 7, i == 0 ? OK : TEXT, 1, SURFACE);
+        String detail = String(c.rssi) + " dBm  " + signalText(c.rssi);
+        drawTextFit(detail, 198, y + 7, MUTED, 1, SURFACE);
         y += 42;
     }
 }
 
-static void drawConnectResult(const BleConnectResult &result) {
-    drawHeader("BLE Test");
-    tft.setTextSize(1);
-
-    tft.setTextColor(result.bleConnected ? TFT_GREEN : TFT_RED, TFT_BLACK);
-    tft.setCursor(20, 70);
-    tft.println(result.bleConnected ? "BLE connected" : "BLE failed");
-
-    tft.setTextColor(result.serviceFound ? TFT_GREEN : TFT_RED, TFT_BLACK);
-    tft.setCursor(20, 100);
-    tft.println(result.serviceFound ? "UART service OK" : "UART service missing");
-
-    tft.setTextColor(result.rxFound ? TFT_GREEN : TFT_RED, TFT_BLACK);
-    tft.setCursor(20, 130);
-    tft.println(result.rxFound ? "RX char OK" : "RX char missing");
-
-    tft.setTextColor(result.txFound ? TFT_GREEN : TFT_RED, TFT_BLACK);
-    tft.setCursor(20, 160);
-    tft.println(result.txFound ? "TX char OK" : "TX char missing");
-
-    if (result.error.length() > 0) {
-        tft.setTextColor(TFT_RED, TFT_BLACK);
-        tft.setCursor(20, 210);
-        tft.println(result.error);
-    }
+void drawConnectResult(const BleConnectResult &result) {
+    drawShell("BLE UART", result.ok ? "BLE connected and UART found." : "BLE test failed.");
+    drawStatusRow(92, "BLE", result.bleConnected ? "connected" : "failed", result.bleConnected ? OK : FAIL);
+    drawStatusRow(122, "Service", result.serviceFound ? "UART OK" : "missing", result.serviceFound ? OK : FAIL);
+    drawStatusRow(152, "RX/TX", result.rxFound && result.txFound ? "OK" : "missing", result.rxFound && result.txFound ? OK : FAIL);
+    if (result.error.length() > 0) drawTextFit(shortText(result.error, 36), 18, 198, FAIL, 1);
 }
 
-static void drawHotspotResult(const HotspotCredentials &result) {
-    drawHeader("Hotspot");
-    tft.setTextSize(1);
-
-    tft.setTextColor(result.ok ? TFT_GREEN : TFT_RED, TFT_BLACK);
-    tft.setCursor(20, 70);
-    tft.println(result.ok ? "Credentials OK" : "Hotspot failed");
-
-    tft.setTextColor(TFT_WHITE, TFT_BLACK);
-    tft.setCursor(20, 105);
-    String ssid = result.ssid;
-    if (ssid.length() > 24) ssid = ssid.substring(0, 24);
-    tft.print("SSID: ");
-    tft.println(ssid);
-
-    tft.setCursor(20, 130);
-    tft.print("IP: ");
-    tft.println(result.ip.length() > 0 ? result.ip : "192.168.10.1");
-
-    tft.setCursor(20, 155);
-    tft.printf("Password: %u chars", static_cast<unsigned>(result.password.length()));
-
-    if (result.error.length() > 0) {
-        tft.setTextColor(TFT_RED, TFT_BLACK);
-        tft.setCursor(20, 210);
-        tft.println(result.error);
-    }
+void drawHotspotResult(const HotspotCredentials &result) {
+    drawShell("Hotspot", result.ok ? "Credentials received." : "Hotspot auth failed.");
+    drawStatusRow(92, "Auth", result.ok ? "OK" : "failed", result.ok ? OK : FAIL);
+    drawStatusRow(122, "SSID", shortText(result.ssid, 20), result.ok ? TEXT : MUTED);
+    drawStatusRow(152, "IP", result.ip.length() > 0 ? result.ip : "192.168.10.1", TEXT);
+    drawStatusRow(182, "Password", String(result.password.length()) + " chars", MUTED);
 }
 
-static void drawWifiResult(const WifiConnectResult &result) {
-    drawHeader("WiFi");
-    tft.setTextSize(1);
-
-    tft.setTextColor(result.ok ? TFT_GREEN : TFT_RED, TFT_BLACK);
-    tft.setCursor(20, 70);
-    tft.println(result.ok ? "Hotspot connected" : "WiFi failed");
-
-    tft.setTextColor(TFT_WHITE, TFT_BLACK);
-    tft.setCursor(20, 105);
-    String ssid = result.ssid;
-    if (ssid.length() > 24) ssid = ssid.substring(0, 24);
-    tft.print("SSID: ");
-    tft.println(ssid);
-
-    tft.setCursor(20, 130);
-    tft.print("Local: ");
-    tft.println(result.localIp.length() > 0 ? result.localIp : "-");
-
-    tft.setCursor(20, 155);
-    tft.print("Gateway: ");
-    tft.println(result.gatewayIp.length() > 0 ? result.gatewayIp : "-");
-
-    tft.setCursor(20, 180);
-    tft.printf("RSSI: %d dBm", result.rssi);
-
-    if (result.error.length() > 0) {
-        tft.setTextColor(TFT_RED, TFT_BLACK);
-        tft.setCursor(20, 220);
-        tft.println(result.error);
-    }
+void drawWifiResult(const WifiConnectResult &result) {
+    drawShell("WiFi", result.ok ? "Connected to controller hotspot." : "WiFi failed.");
+    drawStatusRow(92, "Hotspot", result.ok ? "connected" : "failed", result.ok ? OK : FAIL);
+    drawStatusRow(122, "Local", result.localIp.length() > 0 ? result.localIp : "-", TEXT);
+    drawStatusRow(152, "Gateway", result.gatewayIp.length() > 0 ? result.gatewayIp : "-", TEXT);
+    drawStatusRow(182, "RSSI", String(result.rssi) + " dBm", result.rssi > -65 ? OK : WARN);
 }
 
-static void drawHttpResult(const HttpProbeResult &result) {
-    drawHeader("EXOsocket");
-    tft.setTextSize(1);
+void drawHttpResult(const HttpProbeResult &result) {
+    finalOk = result.ok;
+    finalTitle = result.ok ? "EXOsocket OK" : "EXOsocket probe done";
+    finalDetail = result.path.length() > 0 ? result.path : "No accepted WebSocket path yet";
 
-    tft.setTextColor(result.ok ? TFT_GREEN : TFT_RED, TFT_BLACK);
-    tft.setCursor(20, 70);
-    tft.println(result.ok ? "WebSocket OK" : "WebSocket failed");
+    screenMode = ScreenMode::Done;
+    flowComplete = true;
+    drawShell(finalTitle, finalDetail);
+    drawStatusRow(92, "Host", result.host.length() > 0 ? result.host : "-", TEXT);
+    drawStatusRow(122, "Status", String(result.statusCode), result.ok ? OK : WARN);
+    drawStatusRow(152, "Path", result.path.length() > 0 ? shortText(result.path, 22) : "-", TEXT);
+    drawButton(primaryButton, "RESTART", result.ok ? OK : ACCENT, TEXT);
+}
 
-    tft.setTextColor(TFT_WHITE, TFT_BLACK);
-    tft.setCursor(20, 105);
-    tft.print("Host: ");
-    tft.println(result.host);
+void drawFinalFailure(const String &title, const String &detail) {
+    finalOk = false;
+    finalTitle = title;
+    finalDetail = detail;
+    screenMode = ScreenMode::Done;
+    flowComplete = true;
+    drawShell(title, detail);
+    drawStatusRow(106, "Result", "stopped", FAIL);
+    drawButton(primaryButton, "RESTART", ACCENT, TEXT);
+}
 
-    tft.setCursor(20, 130);
-    tft.print("Path: ");
-    tft.println(result.path.length() > 0 ? result.path : "-");
+void runFlow() {
+    drawProgress("Scanning", "Looking for Access controllers...");
+    auto controllers = session.scan(8);
+    drawControllerList(controllers);
+    delay(900);
 
-    tft.setCursor(20, 155);
-    tft.printf("Status: %d", result.statusCode);
-
-    if (result.error.length() > 0) {
-        tft.setTextColor(TFT_RED, TFT_BLACK);
-        tft.setCursor(20, 210);
-        tft.println(result.error);
+    if (controllers.empty()) {
+        drawFinalFailure("No Controller", "Move closer and restart.");
+        return;
     }
+
+    drawProgress("BLE UART", shortText(controllers[0].name, 30), "Testing advertised-device connect...");
+    BleConnectResult ble = session.connect(controllers[0]);
+    drawConnectResult(ble);
+    delay(900);
+    if (!ble.ok) {
+        drawFinalFailure("BLE Failed", ble.error.length() > 0 ? shortText(ble.error, 32) : "UART service not ready.");
+        return;
+    }
+
+    drawProgress("Hotspot", "Reading credentials over BLE...");
+    HotspotCredentials credentials = session.readHotspot(controllers[0]);
+    drawHotspotResult(credentials);
+    delay(900);
+    if (!credentials.ok) {
+        drawFinalFailure("Hotspot Failed", credentials.error.length() > 0 ? shortText(credentials.error, 32) : "Auth or MessagePack failed.");
+        return;
+    }
+
+    drawProgress("WiFi", "Connecting to controller hotspot...", shortText(credentials.ssid, 30));
+    WifiConnectResult wifi = session.connectWifi(credentials);
+    drawWifiResult(wifi);
+    delay(900);
+    if (!wifi.ok) {
+        drawFinalFailure("WiFi Failed", wifi.error.length() > 0 ? shortText(wifi.error, 32) : "Could not join hotspot.");
+        return;
+    }
+
+    drawProgress("EXOsocket", "Testing WebSocket handshake on port 80...");
+    HttpProbeResult http = session.probeHttp(wifi);
+    drawHttpResult(http);
+}
 }
 
 void App::begin() {
@@ -206,68 +257,34 @@ void App::begin() {
     digitalWrite(21, HIGH);
 
     tft.init();
-    tft.setRotation(0);
+    tft.setRotation(1);
+    tft.invertDisplay(true);
+    tft.fillScreen(BG);
 
-    drawBoot();
-    delay(1200);
-
+    touch.begin();
     session.begin();
-
-    drawScanning();
-    auto controllers = session.scan(8);
-    drawResults(controllers);
-
-    if (!controllers.empty()) {
-        delay(1500);
-        drawHeader("Connecting");
-        tft.setTextColor(TFT_WHITE, TFT_BLACK);
-        tft.setTextSize(1);
-        tft.setCursor(20, 75);
-        tft.println(controllers[0].name);
-        tft.setCursor(20, 105);
-        tft.println("Testing BLE link...");
-
-        BleConnectResult result = session.connect(controllers[0]);
-        drawConnectResult(result);
-
-        if (result.ok) {
-            delay(1500);
-            drawHeader("Hotspot");
-            tft.setTextColor(TFT_WHITE, TFT_BLACK);
-            tft.setTextSize(1);
-            tft.setCursor(20, 75);
-            tft.println("Reading credentials...");
-
-            HotspotCredentials credentials = session.readHotspot(controllers[0]);
-            drawHotspotResult(credentials);
-
-            if (credentials.ok) {
-                delay(1500);
-                drawHeader("WiFi");
-                tft.setTextColor(TFT_WHITE, TFT_BLACK);
-                tft.setTextSize(1);
-                tft.setCursor(20, 75);
-                tft.println("Connecting hotspot...");
-
-                WifiConnectResult wifi = session.connectWifi(credentials);
-                drawWifiResult(wifi);
-
-                if (wifi.ok) {
-                    delay(1500);
-                    drawHeader("EXOsocket");
-                    tft.setTextColor(TFT_WHITE, TFT_BLACK);
-                    tft.setTextSize(1);
-                    tft.setCursor(20, 75);
-                    tft.println("Testing WebSocket...");
-
-                    HttpProbeResult http = session.probeHttp(wifi);
-                    drawHttpResult(http);
-                }
-            }
-        }
-    }
+    drawHome();
 }
 
 void App::update() {
+    if (screenMode == ScreenMode::Home) {
+        TouchPoint point = touch.read();
+        if (inRect(point, primaryButton) && touch.wasTapped()) {
+            flowRequested = true;
+        }
+
+        if (flowRequested) {
+            flowRequested = false;
+            runFlow();
+        }
+    } else if (screenMode == ScreenMode::Done) {
+        TouchPoint point = touch.read();
+        if (inRect(point, primaryButton) && touch.wasTapped()) {
+            Serial.println("Restart requested from touch UI");
+            delay(150);
+            ESP.restart();
+        }
+    }
+
     delay(20);
 }

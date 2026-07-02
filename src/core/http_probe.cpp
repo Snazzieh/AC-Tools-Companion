@@ -1,14 +1,23 @@
 #include "http_probe.h"
 
+#include <esp_system.h>
 #include <WiFiClient.h>
 
 static const char *EXOSOCKET_PATHS[] = {
-    "/",
-    "/_EXOsocket",
-    "/_EXOsocket/"
+    "/"
 };
 static const char *EXOSOCKET_PROTOCOL = "EXOsocket";
-static const char *WS_KEY = "dGhlIHNhbXBsZSBub25jZQ==";
+
+struct HandshakeVariant {
+    const char *name;
+    const char *key;
+    bool includeUserAgent;
+};
+
+static const HandshakeVariant HANDSHAKE_VARIANTS[] = {
+    {"python-websockets", "MTIzNDU2Nzg5MDEyMzQ1Ng==", true},
+    {"minimal", "MTIzNDU2Nzg5MDEyMzQ1Ng==", false}
+};
 
 static int parseStatusCode(const String &statusLine) {
     int firstSpace = statusLine.indexOf(' ');
@@ -47,20 +56,117 @@ static void captureHeader(HttpProbeResult &result, const String &line) {
     }
 }
 
-static void sendWebSocketHandshake(WiFiClient &client, const String &host, const char *path) {
-    client.printf("GET %s HTTP/1.1\r\n", path);
-    client.printf("Host: %s\r\n", host.c_str());
-    client.print("Upgrade: websocket\r\n");
-    client.print("Connection: Upgrade\r\n");
-    client.printf("Sec-WebSocket-Key: %s\r\n", WS_KEY);
-    client.print("Sec-WebSocket-Version: 13\r\n");
-    client.printf("Sec-WebSocket-Protocol: %s\r\n", EXOSOCKET_PROTOCOL);
-    client.print("Origin: http://");
-    client.print(host);
-    client.print("\r\n\r\n");
+static void sendWebSocketHandshake(WiFiClient &client, const String &host, const char *path, const HandshakeVariant &variant) {
+    String request;
+    request.reserve(260);
+    request += "GET ";
+    request += path;
+    request += " HTTP/1.1\r\n";
+    request += "Host: ";
+    request += host;
+    request += "\r\n";
+    request += "Upgrade: websocket\r\n";
+    request += "Connection: Upgrade\r\n";
+    request += "Sec-WebSocket-Key: ";
+    request += variant.key;
+    request += "\r\n";
+    request += "Sec-WebSocket-Version: 13\r\n";
+    request += "Sec-WebSocket-Protocol: ";
+    request += EXOSOCKET_PROTOCOL;
+    request += "\r\n";
+    if (variant.includeUserAgent) {
+        request += "User-Agent: Python/3.12 websockets/15.0.1\r\n";
+    }
+    request += "\r\n";
+
+    client.write(reinterpret_cast<const uint8_t *>(request.c_str()), request.length());
+    client.flush();
 }
 
-static HttpProbeResult probePath(const String &host, const char *path) {
+static bool sendWebSocketText(WiFiClient &client, const String &text) {
+    size_t len = text.length();
+    if (len > 125) return false;
+
+    uint8_t mask[4];
+    uint32_t randomValue = esp_random();
+    mask[0] = randomValue & 0xFF;
+    mask[1] = (randomValue >> 8) & 0xFF;
+    mask[2] = (randomValue >> 16) & 0xFF;
+    mask[3] = (randomValue >> 24) & 0xFF;
+
+    uint8_t header[6] = {
+        0x81,
+        static_cast<uint8_t>(0x80 | len),
+        mask[0],
+        mask[1],
+        mask[2],
+        mask[3]
+    };
+
+    client.write(header, sizeof(header));
+
+    for (size_t i = 0; i < len; i++) {
+        uint8_t encoded = static_cast<uint8_t>(text[i]) ^ mask[i % 4];
+        client.write(&encoded, 1);
+    }
+
+    client.flush();
+    return true;
+}
+
+static bool readExact(WiFiClient &client, uint8_t *buffer, size_t len, uint32_t timeoutMs) {
+    size_t readCount = 0;
+    uint32_t start = millis();
+
+    while (readCount < len && millis() - start < timeoutMs) {
+        while (client.available() && readCount < len) {
+            int value = client.read();
+            if (value < 0) break;
+            buffer[readCount++] = static_cast<uint8_t>(value);
+        }
+        delay(5);
+        yield();
+    }
+
+    return readCount == len;
+}
+
+static String readWebSocketText(WiFiClient &client, uint32_t timeoutMs) {
+    uint8_t header[2];
+    if (!readExact(client, header, sizeof(header), timeoutMs)) return "";
+
+    uint8_t opcode = header[0] & 0x0F;
+    bool masked = (header[1] & 0x80) != 0;
+    uint64_t len = header[1] & 0x7F;
+
+    if (len == 126) {
+        uint8_t ext[2];
+        if (!readExact(client, ext, sizeof(ext), timeoutMs)) return "";
+        len = (static_cast<uint16_t>(ext[0]) << 8) | ext[1];
+    } else if (len == 127) {
+        return "";
+    }
+
+    if (len > 512) return "";
+
+    uint8_t mask[4] = {0, 0, 0, 0};
+    if (masked && !readExact(client, mask, sizeof(mask), timeoutMs)) return "";
+
+    String text;
+    text.reserve(static_cast<unsigned int>(len));
+
+    for (uint64_t i = 0; i < len; i++) {
+        uint8_t byte = 0;
+        if (!readExact(client, &byte, 1, timeoutMs)) return "";
+        if (masked) byte ^= mask[i % 4];
+        if (opcode == 0x1 && byte >= 32 && byte <= 126) text += static_cast<char>(byte);
+        else if (opcode == 0x1 && (byte == '\n' || byte == '\r' || byte == '\t')) text += ' ';
+    }
+
+    return text;
+}
+
+static HttpProbeResult probePath(const String &host, const char *path, const HandshakeVariant &variant) {
     HttpProbeResult result;
     result.host = host;
     result.path = path;
@@ -68,14 +174,18 @@ static HttpProbeResult probePath(const String &host, const char *path) {
     WiFiClient client;
     client.setTimeout(5000);
 
-    Serial.printf("WS probe ws://%s%s protocol=%s\n", result.host.c_str(), result.path.c_str(), EXOSOCKET_PROTOCOL);
+    Serial.printf("WS probe ws://%s%s protocol=%s variant=%s\n",
+                  result.host.c_str(),
+                  result.path.c_str(),
+                  EXOSOCKET_PROTOCOL,
+                  variant.name);
     if (!client.connect(result.host.c_str(), 80)) {
         result.error = "TCP connect failed";
         Serial.println(result.error);
         return result;
     }
 
-    sendWebSocketHandshake(client, result.host, path);
+    sendWebSocketHandshake(client, result.host, path, variant);
 
     result.statusLine = readLine(client, 5000);
     result.statusCode = parseStatusCode(result.statusLine);
@@ -89,6 +199,20 @@ static HttpProbeResult probePath(const String &host, const char *path) {
     }
 
     result.ok = result.statusCode == 101;
+
+    if (result.ok) {
+        const String versionOffer = "{\"method\":\"versionOffer\",\"params\":{\"version\":1,\"featureLevel\":0,\"capabilities\":0}}";
+        Serial.printf("WS send versionOffer bytes=%u\n", versionOffer.length());
+        if (sendWebSocketText(client, versionOffer)) {
+            result.sample = readWebSocketText(client, 5000);
+            Serial.printf("WS version reply: %s\n", result.sample.c_str());
+            if (result.sample.indexOf("versionAck") < 0) {
+                result.error = "WebSocket OK, versionAck missing";
+            }
+        } else {
+            result.error = "Could not send versionOffer";
+        }
+    }
 
     if (!result.ok) {
         uint32_t bodyStart = millis();
@@ -105,7 +229,8 @@ static HttpProbeResult probePath(const String &host, const char *path) {
         if (result.error.length() == 0) result.error = "WebSocket upgrade failed";
     }
 
-    Serial.printf("WS result status=%d line=%s protocol=%s accept=%s sample=%s\n",
+    Serial.printf("WS result variant=%s status=%d line=%s protocol=%s accept=%s sample=%s\n",
+                  variant.name,
                   result.statusCode,
                   result.statusLine.c_str(),
                   result.protocol.c_str(),
@@ -131,9 +256,11 @@ HttpProbeResult HttpProbe::probe(const WifiConnectResult &wifi) {
     }
 
     for (const char *path : EXOSOCKET_PATHS) {
-        last = probePath(host, path);
-        if (last.ok) return last;
-        delay(200);
+        for (const auto &variant : HANDSHAKE_VARIANTS) {
+            last = probePath(host, path, variant);
+            if (last.ok) return last;
+            delay(200);
+        }
     }
 
     return last;
