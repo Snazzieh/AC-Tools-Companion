@@ -45,6 +45,7 @@ struct ButtonRect {
 };
 
 const ButtonRect primaryButton{28, 198, 264, 35};
+const ButtonRect restartTouchArea{0, 0, 320, 240};
 const ButtonRect controllerAppButton{28, 98, 264, 32};
 const ButtonRect priceAppButton{28, 156, 264, 32};
 const ButtonRect controllerHomeTouchArea{0, 0, 320, 120};
@@ -192,7 +193,7 @@ void drawShell(const String &title, const String &subtitle = "") {
     tft.setCursor(13, 14);
     tft.print("AC");
     drawTextFit("AC Tools", 36, 10, TEXT, 1, PANEL);
-    drawTextFit("Companion", 238, 10, MUTED, 1, PANEL);
+    drawTextFit("Companion", 214, 10, MUTED, 1, PANEL);
     drawTextFit(title, 14, 52, TEXT, 2);
     if (subtitle.length() > 0) {
         drawTextFit(subtitle, 16, 80, MUTED, 1);
@@ -925,7 +926,7 @@ void App::update() {
         }
     } else if (screenMode == ScreenMode::Done) {
         TouchPoint point = touch.read();
-        if (inRect(point, primaryButton) && touch.wasTapped()) {
+        if (inRect(point, restartTouchArea) && touch.wasTapped()) {
             Serial.println("Restart requested from touch UI");
             delay(150);
             ESP.restart();
