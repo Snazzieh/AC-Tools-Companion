@@ -47,6 +47,8 @@ struct ButtonRect {
 const ButtonRect primaryButton{28, 198, 264, 35};
 const ButtonRect controllerAppButton{28, 98, 264, 32};
 const ButtonRect priceAppButton{28, 156, 264, 32};
+const ButtonRect controllerHomeTouchArea{0, 0, 320, 120};
+const ButtonRect priceHomeTouchArea{0, 120, 320, 120};
 const ButtonRect priceMenuButton{270, 4, 46, 42};
 const ButtonRect priceMenuVisualButton{270, 4, 46, 42};
 
@@ -908,11 +910,13 @@ void App::update() {
 
     if (screenMode == ScreenMode::Home) {
         TouchPoint point = touch.read();
-        if (inRect(point, controllerAppButton) && touch.wasTapped()) {
-            flowRequested = true;
-        } else if (inRect(point, priceAppButton) && touch.wasTapped()) {
-            powerPrices.requestRefresh();
-            drawPricePageV2();
+        if (touch.wasTapped()) {
+            if (inRect(point, controllerHomeTouchArea)) {
+                flowRequested = true;
+            } else if (inRect(point, priceHomeTouchArea)) {
+                powerPrices.requestRefresh();
+                drawPricePageV2();
+            }
         }
 
         if (flowRequested) {

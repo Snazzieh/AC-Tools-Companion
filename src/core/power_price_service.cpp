@@ -98,6 +98,80 @@ String hourLabel(const HourPrice &price) {
     return twoDigits(price.hour) + ":00";
 }
 
+int findJsonValueStart(const String &payload, const char *key, int from) {
+    String token = "\"";
+    token += key;
+    token += "\"";
+    int keyIndex = payload.indexOf(token, from);
+    if (keyIndex < 0) return -1;
+
+    int colon = payload.indexOf(':', keyIndex + token.length());
+    if (colon < 0) return -1;
+
+    int valueStart = colon + 1;
+    while (valueStart < static_cast<int>(payload.length()) && isspace(payload[valueStart])) {
+        valueStart++;
+    }
+    return valueStart;
+}
+
+bool readJsonStringField(const String &payload, const char *key, int from, String &value) {
+    int start = findJsonValueStart(payload, key, from);
+    if (start < 0 || start >= static_cast<int>(payload.length()) || payload[start] != '"') return false;
+
+    int end = payload.indexOf('"', start + 1);
+    if (end < 0) return false;
+
+    value = payload.substring(start + 1, end);
+    return true;
+}
+
+bool readJsonFloatField(const String &payload, const char *key, int from, float &value) {
+    int start = findJsonValueStart(payload, key, from);
+    if (start < 0) return false;
+
+    int end = start;
+    while (end < static_cast<int>(payload.length())) {
+        char ch = payload[end];
+        if (!(isdigit(ch) || ch == '-' || ch == '+' || ch == '.' || ch == 'e' || ch == 'E')) break;
+        end++;
+    }
+    if (end == start) return false;
+
+    value = payload.substring(start, end).toFloat();
+    return true;
+}
+
+bool parsePricePayload(const String &payload, HourPrice prices[24], uint8_t &count) {
+    count = 0;
+    int cursor = 0;
+
+    while (count < 24) {
+        int objectStart = payload.indexOf('{', cursor);
+        if (objectStart < 0) break;
+        int objectEnd = payload.indexOf('}', objectStart + 1);
+        if (objectEnd < 0) break;
+
+        float price = NAN;
+        String timeStart;
+        bool hasPrice = readJsonFloatField(payload, "DKK_per_kWh", objectStart, price);
+        bool hasTime = readJsonStringField(payload, "time_start", objectStart, timeStart);
+        if (hasPrice && hasTime) {
+            uint8_t hour = hourFromTimeStart(timeStart.c_str());
+            if (validPrice(price) && hour <= 23) {
+                prices[count].hour = hour;
+                prices[count].price = price + PRICE_ADJUSTMENT_DKK_PER_KWH;
+                prices[count].valid = true;
+                count++;
+            }
+        }
+
+        cursor = objectEnd + 1;
+    }
+
+    return count > 0;
+}
+
 const char *wifiStatusName(wl_status_t status) {
     switch (status) {
         case WL_IDLE_STATUS: return "WL_IDLE_STATUS";
@@ -443,36 +517,19 @@ bool PowerPriceService::fetchDay(time_t day, HourPrice prices[24], uint8_t &coun
     String payload = http.getString();
     http.end();
 
-    DynamicJsonDocument doc(32768);
-    DeserializationError jsonError = deserializeJson(doc, payload);
-    if (jsonError) {
-        error = "Invalid JSON";
-        Serial.printf("Power price JSON error: %s\n", jsonError.c_str());
-        return false;
-    }
+    Serial.printf("Power price payload bytes=%u first=%c\n",
+                  payload.length(),
+                  payload.length() > 0 ? payload[0] : '?');
 
-    if (!doc.is<JsonArray>()) {
-        error = "Missing JSON array";
-        return false;
-    }
-
-    JsonArray array = doc.as<JsonArray>();
-    for (JsonObject item : array) {
-        if (count >= 24) break;
-        float price = item["DKK_per_kWh"] | NAN;
-        uint8_t hour = hourFromTimeStart(item["time_start"] | "");
-        if (!validPrice(price) || hour > 23) continue;
-
-        prices[count].hour = hour;
-        prices[count].price = price + PRICE_ADJUSTMENT_DKK_PER_KWH;
-        prices[count].valid = true;
-        count++;
-    }
-
-    if (count == 0) {
+    if (!parsePricePayload(payload, prices, count)) {
         error = "No prices in JSON";
+        Serial.printf("Power price parse failed payloadLen=%u sample=%.64s\n",
+                      payload.length(),
+                      payload.c_str());
         return false;
     }
+
+    Serial.printf("Power price parsed prices=%u\n", count);
 
     return true;
 }
