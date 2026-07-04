@@ -319,9 +319,13 @@ void PowerPriceService::refresh() {
 }
 
 bool PowerPriceService::ensureWifi(String &error) {
-    if (WiFi.status() == WL_CONNECTED && WiFi.SSID() == DEFAULT_WIFI_SSID) return true;
+    if (WiFi.status() == WL_CONNECTED) {
+        for (int i = 0; i < WIFI_NETWORK_COUNT; i++) {
+            if (WiFi.SSID() == WIFI_NETWORKS[i].ssid) return true;
+        }
+    }
 
-    Serial.printf("Power price WiFi connecting to %s...\n", DEFAULT_WIFI_SSID);
+    Serial.println("Power price WiFi scanning for known networks...");
     WiFi.persistent(false);
     WiFi.disconnect(true, false);
     WiFi.mode(WIFI_OFF);
@@ -330,7 +334,29 @@ bool PowerPriceService::ensureWifi(String &error) {
     WiFi.setSleep(true);
     WiFi.disconnect(false, false);
     delay(200);
-    WiFi.begin(DEFAULT_WIFI_SSID, DEFAULT_WIFI_PASSWORD);
+
+    int foundNetworks = WiFi.scanNetworks(false, true);
+    int selectedNetwork = -1;
+    int selectedRssi = -127;
+    for (int known = 0; known < WIFI_NETWORK_COUNT; known++) {
+        for (int scanned = 0; scanned < foundNetworks; scanned++) {
+            if (WiFi.SSID(scanned) == WIFI_NETWORKS[known].ssid && WiFi.RSSI(scanned) > selectedRssi) {
+                selectedNetwork = known;
+                selectedRssi = WiFi.RSSI(scanned);
+            }
+        }
+    }
+    WiFi.scanDelete();
+
+    if (selectedNetwork < 0) {
+        error = "Known SSID not found";
+        Serial.printf("Power price WiFi failed: no known SSID found among %d networks\n", foundNetworks);
+        return false;
+    }
+
+    const WifiCredential &network = WIFI_NETWORKS[selectedNetwork];
+    Serial.printf("Power price WiFi connecting to %s rssi=%d...\n", network.ssid, selectedRssi);
+    WiFi.begin(network.ssid, network.password);
 
     uint32_t start = millis();
     uint32_t lastLog = 0;
@@ -340,7 +366,10 @@ bool PowerPriceService::ensureWifi(String &error) {
         lastStatus = status;
 
         if (status == WL_CONNECTED) {
-            Serial.printf("Power price WiFi connected ip=%s\n", WiFi.localIP().toString().c_str());
+            Serial.printf("Power price WiFi connected ip=%s gateway=%s dns=%s\n",
+                          WiFi.localIP().toString().c_str(),
+                          WiFi.gatewayIP().toString().c_str(),
+                          WiFi.dnsIP().toString().c_str());
             return true;
         }
 
@@ -353,24 +382,12 @@ bool PowerPriceService::ensureWifi(String &error) {
         yield();
     }
 
-    int foundNetworks = WiFi.scanNetworks(false, true);
-    bool foundSsid = false;
-    int foundRssi = -127;
-    for (int i = 0; i < foundNetworks; i++) {
-        if (WiFi.SSID(i) == DEFAULT_WIFI_SSID) {
-            foundSsid = true;
-            foundRssi = WiFi.RSSI(i);
-            break;
-        }
-    }
-    WiFi.scanDelete();
-
-    error = foundSsid ? "WiFi timeout" : "SSID not found";
-    Serial.printf("Power price WiFi failed status=%d %s ssidFound=%s rssi=%d\n",
+    error = "WiFi timeout";
+    Serial.printf("Power price WiFi failed ssid=%s status=%d %s rssi=%d\n",
+                  network.ssid,
                   lastStatus,
                   wifiStatusName(lastStatus),
-                  foundSsid ? "yes" : "no",
-                  foundRssi);
+                  selectedRssi);
     return false;
 }
 

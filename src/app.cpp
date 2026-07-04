@@ -4,7 +4,9 @@
 #include "ui/touch_input.h"
 
 #include <Arduino.h>
+#include <SD.h>
 #include <TFT_eSPI.h>
+#include <SPI.h>
 #include <time.h>
 #include <vector>
 
@@ -13,22 +15,27 @@ TFT_eSPI tft;
 TouchInput touch;
 ControllerSession session;
 PowerPriceService powerPrices;
+SPIClass sdSpi(HSPI);
 
 constexpr uint16_t visible(uint16_t color) {
     return static_cast<uint16_t>(~color);
 }
 
 constexpr uint16_t BG = visible(TFT_BLACK);
-constexpr uint16_t SURFACE = visible(0x1082);
+constexpr uint16_t SURFACE = visible(0x0861);
 constexpr uint16_t PANEL = visible(TFT_BLACK);
 constexpr uint16_t PANEL_2 = visible(0x2965);
 constexpr uint16_t TEXT = visible(TFT_WHITE);
-constexpr uint16_t MUTED = visible(0x9CF3);
+constexpr uint16_t MUTED = visible(0x7BEF);
 constexpr uint16_t ACCENT = 0x245F;
 constexpr uint16_t ACCENT_DARK = 0x21F5;
-constexpr uint16_t OK = visible(0x47E9);
+constexpr uint16_t OK = visible(0x5F0C);
 constexpr uint16_t WARN = visible(0xFDA0);
 constexpr uint16_t FAIL = visible(0xF986);
+constexpr uint8_t SD_CS_PIN = 5;
+constexpr uint8_t SD_SCLK_PIN = 18;
+constexpr uint8_t SD_MISO_PIN = 19;
+constexpr uint8_t SD_MOSI_PIN = 23;
 
 struct ButtonRect {
     int16_t x;
@@ -40,7 +47,8 @@ struct ButtonRect {
 const ButtonRect primaryButton{28, 198, 264, 35};
 const ButtonRect controllerAppButton{28, 98, 264, 32};
 const ButtonRect priceAppButton{28, 156, 264, 32};
-const ButtonRect priceMenuButton{268, 6, 44, 38};
+const ButtonRect priceMenuButton{270, 4, 46, 42};
+const ButtonRect priceMenuVisualButton{270, 4, 46, 42};
 
 enum class ScreenMode {
     Home,
@@ -58,10 +66,18 @@ bool finalOk = false;
 bool gatewayRunning = false;
 uint32_t lastPriceDrawMs = 0;
 bool lastPriceLoading = false;
+uint32_t lastPriceDataUpdatedMs = 0;
+int lastClockMinuteOfDay = -1;
+int lastPriceHour = -1;
+bool sdFontsReady = false;
+bool sdChecked = false;
 
 bool inRect(const TouchPoint &point, const ButtonRect &rect) {
     return point.pressed && point.x >= rect.x && point.x < rect.x + rect.w && point.y >= rect.y && point.y < rect.y + rect.h;
 }
+
+void drawSmoothText(const String &text, const char *fontName, int16_t x, int16_t y, uint16_t color, uint16_t bg, uint8_t fallbackFont);
+void drawSmoothCentered(const String &text, const char *fontName, int16_t x, int16_t y, int16_t w, uint16_t color, uint16_t bg, uint8_t fallbackFont);
 
 int16_t textWidth(const String &text, uint8_t size) {
     return text.length() * 6 * size;
@@ -117,10 +133,8 @@ void drawTextFit(const String &text, int16_t x, int16_t y, uint16_t color, uint8
         return;
     }
 
-    tft.setTextColor(color, bg);
-    tft.setTextSize(size);
-    tft.setCursor(x, y);
-    tft.print(text);
+    const char *fontName = size >= 2 ? "Title22" : "Text14";
+    drawSmoothText(text, fontName, x, y, color, bg, size >= 2 ? 4 : 2);
 }
 
 void drawCenteredText(const String &text, int16_t x, int16_t y, int16_t w, uint16_t color, uint8_t size, uint16_t bg) {
@@ -130,12 +144,8 @@ void drawCenteredText(const String &text, int16_t x, int16_t y, int16_t w, uint1
         return;
     }
 
-    tft.setTextColor(color, bg);
-    tft.setTextSize(size);
-    int16_t textW = textWidth(text, size);
-    int16_t cursorX = x + (w - textW) / 2;
-    tft.setCursor(cursorX < x + 4 ? x + 4 : cursorX, y);
-    tft.print(text);
+    const char *fontName = size >= 2 ? "Title22" : "Text14";
+    drawSmoothCentered(text, fontName, x, y, w, color, bg, size >= 2 ? 4 : 2);
 }
 
 void drawPanel(int16_t x, int16_t y, int16_t w, int16_t h) {
@@ -155,13 +165,30 @@ void drawSmallButton(const ButtonRect &rect, const String &label, uint16_t fill,
     drawCenteredText(label, rect.x, rect.y + 8, rect.w, TEXT, 1, fill);
 }
 
+void drawHomeButton(const ButtonRect &rect, const String &label, uint16_t fill) {
+    tft.fillRoundRect(rect.x, rect.y, rect.w, rect.h, 7, fill);
+    tft.drawRoundRect(rect.x, rect.y, rect.w, rect.h, 7, PANEL_2);
+    drawSmoothCentered(label, "Text14", rect.x, rect.y + 9, rect.w, TEXT, fill, 2);
+}
+
+void drawTinyText(const String &text, int16_t x, int16_t y, uint16_t color, uint16_t bg = BG) {
+    tft.setTextDatum(TL_DATUM);
+    tft.setTextColor(color, bg);
+    tft.setTextFont(1);
+    tft.setTextSize(1);
+    tft.drawString(text, x, y, 1);
+}
+
 void drawShell(const String &title, const String &subtitle = "") {
     tft.fillScreen(BG);
     tft.fillRect(0, 0, 320, 34, PANEL);
     tft.drawFastVLine(0, 0, 240, PANEL_2);
     tft.fillRect(0, 34, 320, 1, PANEL_2);
     tft.fillRoundRect(9, 8, 18, 18, 3, ACCENT);
-    drawTextFit("AC", 13, 14, TEXT, 1, ACCENT);
+    tft.setTextColor(TEXT, ACCENT);
+    tft.setTextSize(1);
+    tft.setCursor(13, 14);
+    tft.print("AC");
     drawTextFit("AC Tools", 36, 10, TEXT, 1, PANEL);
     drawTextFit("Companion", 238, 10, MUTED, 1, PANEL);
     drawTextFit(title, 14, 52, TEXT, 2);
@@ -195,10 +222,9 @@ void drawHome() {
 
     drawShell("AC Tools Companion", "Choose app.");
     drawPanel(14, 82, 292, 122);
-    drawTextFit("Controller laeser", 28, 90, TEXT, 1, SURFACE);
-    drawTextFit("BLE / Hotspot / WiFi / EXOsocket gateway", 28, 135, MUTED, 1, SURFACE);
-    drawButton(controllerAppButton, "Controller", ACCENT_DARK, PANEL_2);
-    drawButton(priceAppButton, "Strømpriser", ACCENT, PANEL_2);
+    drawTinyText("BLE / Hotspot / WiFi / EXOsocket gateway", 28, 136, MUTED, SURFACE);
+    drawHomeButton(controllerAppButton, "Controller", ACCENT_DARK);
+    drawHomeButton(priceAppButton, "StrQmpriser", ACCENT);
 }
 
 void drawProgress(const String &title, const String &line1, const String &line2 = "", uint8_t percent = 0, const String &label = "") {
@@ -230,15 +256,21 @@ void finishProgress(const String &title, const String &line1, const String &line
 }
 
 String priceText(float price) {
-    String text = String(price, 2);
-    text.replace(".", ",");
-    return text + " kr/kWh";
+    if (price < 1.0f) price = 1.0f;
+    return String(price, 2) + " kr/kWh";
 }
 
 String priceValueText(float price) {
-    String text = String(price, 2);
-    text.replace(".", ",");
-    return text;
+    if (price < 1.0f) price = 1.0f;
+    return String(price, 2);
+}
+
+void priceValueParts(float price, String &whole, String &fraction) {
+    int cents = static_cast<int>(roundf(price * 100.0f));
+    if (cents < 0) cents = 0;
+    whole = String(cents / 100);
+    int frac = cents % 100;
+    fraction = frac < 10 ? "0" + String(frac) : String(frac);
 }
 
 String hourPriceText(const HourPrice &price) {
@@ -288,6 +320,12 @@ String recommendationText(float price) {
     return "UNDGAA";
 }
 
+String decisionText(float price) {
+    if (price <= 1.6f) return "Brug nu";
+    if (price <= 2.1f) return "Vent lidt";
+    return "Undgaa nu";
+}
+
 HourPrice cheapestUpcoming(const PowerPriceData &prices) {
     HourPrice best;
     for (uint8_t i = 0; i < prices.nextHoursCount && i < 7; i++) {
@@ -308,41 +346,212 @@ int minutesUntilHour(uint8_t hour) {
     return targetMinutes - currentMinutes;
 }
 
+void drawModernText(const String &text, int16_t x, int16_t y, uint16_t color, uint8_t font, uint16_t bg);
+void drawModernCentered(const String &text, int16_t x, int16_t y, int16_t w, uint16_t color, uint8_t font, uint16_t bg);
+
+bool smoothFontExists(const char *name) {
+    if (!sdFontsReady) return false;
+    static bool price72Checked = false;
+    static bool price72Ready = false;
+    static bool priceChecked = false;
+    static bool priceReady = false;
+    static bool titleChecked = false;
+    static bool titleReady = false;
+    static bool textChecked = false;
+    static bool textReady = false;
+    static bool statusChecked = false;
+    static bool statusReady = false;
+
+    bool *checked = nullptr;
+    bool *ready = nullptr;
+    if (strcmp(name, "Price72") == 0) {
+        checked = &price72Checked;
+        ready = &price72Ready;
+    } else if (strcmp(name, "Price64") == 0) {
+        checked = &priceChecked;
+        ready = &priceReady;
+    } else if (strcmp(name, "Title22") == 0) {
+        checked = &titleChecked;
+        ready = &titleReady;
+    } else if (strcmp(name, "Text14") == 0) {
+        checked = &textChecked;
+        ready = &textReady;
+    } else if (strcmp(name, "Status18") == 0) {
+        checked = &statusChecked;
+        ready = &statusReady;
+    }
+
+    if (checked && *checked) return ready && *ready;
+
+    String path = "/";
+    path += name;
+    path += ".vlw";
+    bool exists = SD.exists(path);
+    if (checked && ready) {
+        *checked = true;
+        *ready = exists;
+    }
+    return exists;
+}
+
+void logSmoothFont(const char *name) {
+    String path = "/";
+    path += name;
+    path += ".vlw";
+    Serial.printf("SD font %-8s %s\n", path.c_str(), SD.exists(path) ? "found" : "missing");
+}
+
+void beginSdFonts() {
+    pinMode(SD_CS_PIN, OUTPUT);
+    digitalWrite(SD_CS_PIN, HIGH);
+    sdSpi.begin(SD_SCLK_PIN, SD_MISO_PIN, SD_MOSI_PIN, SD_CS_PIN);
+
+    sdFontsReady = SD.begin(SD_CS_PIN, sdSpi, 4000000);
+    sdChecked = true;
+    if (!sdFontsReady || SD.cardType() == CARD_NONE) {
+        sdFontsReady = false;
+        Serial.println("SD smooth fonts: not available");
+        return;
+    }
+
+    uint8_t cardType = SD.cardType();
+    const char *type = cardType == CARD_MMC ? "MMC" : cardType == CARD_SD ? "SD" : cardType == CARD_SDHC ? "SDHC" : "UNKNOWN";
+    Serial.printf("SD smooth fonts: ready type=%s size=%lluMB\n", type, SD.cardSize() / (1024ULL * 1024ULL));
+    logSmoothFont("Price72");
+    logSmoothFont("Price64");
+    logSmoothFont("Title22");
+    logSmoothFont("Text14");
+    logSmoothFont("Status18");
+}
+
+void drawSmoothText(const String &text, const char *fontName, int16_t x, int16_t y, uint16_t color, uint16_t bg, uint8_t fallbackFont) {
+    if (smoothFontExists(fontName)) {
+        tft.setTextDatum(TL_DATUM);
+        tft.setTextColor(color, bg);
+        tft.loadFont(fontName, SD);
+        tft.drawString(text, x, y);
+        tft.unloadFont();
+        return;
+    }
+
+    drawModernText(text, x, y, color, fallbackFont, bg);
+}
+
+void drawSmoothCentered(const String &text, const char *fontName, int16_t x, int16_t y, int16_t w, uint16_t color, uint16_t bg, uint8_t fallbackFont) {
+    if (smoothFontExists(fontName)) {
+        tft.setTextDatum(TC_DATUM);
+        tft.setTextColor(color, bg);
+        tft.loadFont(fontName, SD);
+        tft.drawString(text, x + w / 2, y);
+        tft.unloadFont();
+        tft.setTextDatum(TL_DATUM);
+        return;
+    }
+
+    drawModernCentered(text, x, y, w, color, fallbackFont, bg);
+}
+
+void drawModernText(const String &text, int16_t x, int16_t y, uint16_t color, uint8_t font, uint16_t bg = BG) {
+    tft.setTextDatum(TL_DATUM);
+    tft.setTextColor(color, bg);
+    tft.setTextFont(font);
+    tft.setTextSize(1);
+    tft.drawString(text, x, y, font);
+    tft.setTextFont(1);
+}
+
+void drawModernCentered(const String &text, int16_t x, int16_t y, int16_t w, uint16_t color, uint8_t font, uint16_t bg = BG) {
+    tft.setTextDatum(TC_DATUM);
+    tft.setTextColor(color, bg);
+    tft.setTextFont(font);
+    tft.setTextSize(1);
+    tft.drawString(text, x + w / 2, y, font);
+    tft.setTextDatum(TL_DATUM);
+    tft.setTextFont(1);
+}
+
+void drawFreeCentered(const String &text, const GFXfont *font, int16_t x, int16_t y, int16_t w, uint16_t color, uint16_t bg) {
+    tft.setTextDatum(TC_DATUM);
+    tft.setTextColor(color, bg);
+    tft.setFreeFont(font);
+    tft.setTextSize(1);
+    tft.drawString(text, x + w / 2, y, 1);
+    tft.setTextDatum(TL_DATUM);
+    tft.setFreeFont(nullptr);
+}
+
+void drawFreeText(const String &text, const GFXfont *font, int16_t x, int16_t y, uint16_t color, uint16_t bg) {
+    tft.setTextDatum(TL_DATUM);
+    tft.setTextColor(color, bg);
+    tft.setFreeFont(font);
+    tft.setTextSize(1);
+    tft.drawString(text, x, y, 1);
+    tft.setFreeFont(nullptr);
+}
+
+void drawLargePriceValue(float price, int16_t x, int16_t y, int16_t w, uint16_t color, uint16_t bg) {
+    String text = priceValueText(price);
+    if (smoothFontExists("Price72")) {
+        drawSmoothCentered(text, "Price72", x, y, w, color, bg, 4);
+        return;
+    }
+
+    if (smoothFontExists("Price64")) {
+        drawSmoothCentered(text, "Price64", x, y, w, color, bg, 4);
+        return;
+    }
+
+    drawFreeCentered(text, &FreeSansBold24pt7b, x, y, w, color, bg);
+}
+
+void drawTablePriceValue(float price, int16_t x, int16_t y, uint16_t color, uint16_t bg) {
+    drawSmoothText(priceValueText(price), "Text14", x, y, color, bg, 2);
+}
+
+void drawThickLine(int16_t x0, int16_t y0, int16_t x1, int16_t y1, uint16_t color) {
+    tft.drawLine(x0, y0, x1, y1, color);
+    tft.drawLine(x0 + 1, y0, x1 + 1, y1, color);
+    tft.drawLine(x0, y0 + 1, x1, y1 + 1, color);
+}
+
 void drawPriceCard(int16_t x, int16_t y, int16_t w, int16_t h, uint16_t outline) {
-    tft.fillRoundRect(x, y, w, h, 10, SURFACE);
-    tft.drawRoundRect(x, y, w, h, 10, outline);
+    tft.fillRoundRect(x, y, w, h, 12, SURFACE);
+    tft.drawRoundRect(x, y, w, h, 12, outline);
+    tft.drawRoundRect(x + 1, y + 1, w - 2, h - 2, 11, outline);
 }
 
 void drawSoftCard(int16_t x, int16_t y, int16_t w, int16_t h) {
-    tft.fillRoundRect(x, y, w, h, 10, SURFACE);
-    tft.drawRoundRect(x, y, w, h, 10, PANEL_2);
+    tft.fillRoundRect(x, y, w, h, 12, SURFACE);
 }
 
 void drawBoltIcon(int16_t x, int16_t y, uint16_t color) {
-    tft.fillTriangle(x + 10, y, x, y + 18, x + 10, y + 15, color);
-    tft.fillTriangle(x + 8, y + 13, x + 20, y + 10, x + 7, y + 32, color);
+    drawThickLine(x + 13, y, x + 4, y + 15, color);
+    drawThickLine(x + 4, y + 15, x + 13, y + 13, color);
+    drawThickLine(x + 13, y + 13, x + 7, y + 31, color);
 }
 
 void drawBulbIcon(int16_t x, int16_t y, uint16_t color) {
     tft.drawCircle(x + 8, y + 8, 7, color);
+    tft.drawCircle(x + 8, y + 8, 6, color);
     tft.drawLine(x + 8, y + 15, x + 8, y + 21, color);
+    tft.drawLine(x + 9, y + 15, x + 9, y + 21, color);
     tft.drawFastHLine(x + 4, y + 21, 9, color);
+    tft.drawFastHLine(x + 4, y + 22, 9, color);
     tft.drawFastHLine(x + 5, y + 24, 7, color);
 }
 
 void drawBackIconButton() {
-    int16_t x = priceMenuButton.x + 6;
-    int16_t y = priceMenuButton.y + 5;
-    tft.fillRoundRect(x, y, 32, 28, 9, SURFACE);
-    tft.drawRoundRect(x, y, 32, 28, 9, ACCENT_DARK);
-    tft.drawLine(x + 19, y + 8, x + 10, y + 14, TEXT);
-    tft.drawLine(x + 10, y + 14, x + 19, y + 20, TEXT);
-    tft.drawLine(x + 11, y + 14, x + 24, y + 14, TEXT);
+    tft.fillRect(priceMenuVisualButton.x, priceMenuVisualButton.y, priceMenuVisualButton.w, priceMenuVisualButton.h, BG);
+    int16_t cx = priceMenuVisualButton.x + priceMenuVisualButton.w / 2;
+    int16_t cy = priceMenuVisualButton.y + priceMenuVisualButton.h / 2;
+    tft.drawWideLine(cx + 6, cy - 8, cx - 6, cy, 2.4f, MUTED, BG);
+    tft.drawWideLine(cx - 6, cy, cx + 6, cy + 8, 2.4f, MUTED, BG);
+    tft.drawWideLine(cx - 4, cy, cx + 9, cy, 2.0f, MUTED, BG);
 }
 
 void drawBadge(int16_t x, int16_t y, int16_t w, const String &label, uint16_t fill) {
-    tft.fillRoundRect(x, y, w, 18, 5, fill);
-    drawCenteredText(label, x, y + 5, w, PANEL, 1, fill);
+    tft.fillRoundRect(x, y, w, 20, 10, fill);
+    drawSmoothCentered(label, "Status18", x, y + 2, w, PANEL, fill, 2);
 }
 
 void drawPriceFact(int16_t x, int16_t y, const String &label, const HourPrice &price, uint16_t color) {
@@ -359,45 +568,92 @@ String hourText(const HourPrice &price) {
     return text;
 }
 
+String hourNumberText(uint8_t hour) {
+    String text = hour < 10 ? "0" + String(hour) : String(hour);
+    text += ":00";
+    return text;
+}
+
+String currentClockText() {
+    time_t now = time(nullptr);
+    if (now < 100000) return "--:--";
+
+    struct tm local;
+    localtime_r(&now, &local);
+    char buffer[6];
+    snprintf(buffer, sizeof(buffer), "%02d:%02d", local.tm_hour, local.tm_min);
+    return String(buffer);
+}
+
+int currentMinuteOfDay() {
+    time_t now = time(nullptr);
+    if (now < 100000) return -1;
+
+    struct tm local;
+    localtime_r(&now, &local);
+    return local.tm_hour * 60 + local.tm_min;
+}
+
+String actionTitle(float currentPrice, const HourPrice &currentHour, const HourPrice &cheapest) {
+    if (!cheapest.valid) return "Afventer";
+    if (currentHour.valid && cheapest.hour == currentHour.hour) return "Billigst nu";
+    if (currentPrice <= 1.6f) return "Lav pris";
+    return "Vent";
+}
+
+String actionDetail(const HourPrice &currentHour, const HourPrice &cheapest) {
+    if (!cheapest.valid) return "-";
+    if (currentHour.valid && cheapest.hour == currentHour.hour) return "Brug nu";
+
+    int minutes = minutesUntilHour(cheapest.hour);
+    if (minutes <= 59) return "om " + String(minutes) + " min";
+    return hourText(cheapest);
+}
+
+String insightStatusText(float price) {
+    if (price <= 1.6f) return "Lav pris";
+    if (price <= 2.1f) return "Normal";
+    return "Hoj pris";
+}
+
 bool cheapestIsInChargeWindow(const PowerPriceData &prices) {
     return prices.cheapestToday.valid && prices.cheapestToday.hour >= 7 && prices.cheapestToday.hour <= 16;
 }
 
 void drawMenuCard() {
-    drawBackIconButton();
+    tft.fillRect(190, 0, 130, 48, BG);
+    drawSmoothCentered(currentClockText(), "Price64", 218, 8, 96, TEXT, BG, 4);
 }
 
 void drawPriceLoadingCard(const String &title, const String &detail, uint16_t color) {
     tft.fillScreen(BG);
-    drawSoftCard(18, 72, 284, 86);
-    drawCenteredText(title, 18, 94, 284, color, 2, SURFACE);
-    drawCenteredText(shortText(detail, 28), 18, 126, 284, MUTED, 1, SURFACE);
+    drawSoftCard(20, 74, 280, 82);
+    drawSmoothCentered(title, "Title22", 20, 91, 280, color, SURFACE, 4);
+    drawSmoothCentered(shortText(detail, 28), "Text14", 20, 126, 280, MUTED, SURFACE, 2);
     drawMenuCard();
 }
 
 void drawNextHoursCard(const PowerPriceData &prices) {
+    tft.fillRect(0, 150, 320, 90, BG);
     HourPrice cheapest = cheapestUpcoming(prices);
-    drawSoftCard(8, 150, 304, 82);
-    drawTextFit("NAESTE TIMER", 20, 160, ACCENT, 1, SURFACE);
-    drawTextFit("kr/kWh", 250, 160, MUTED, 1, SURFACE);
+    drawSmoothText("Kommende timer", "Text14", 24, 156, MUTED, BG, 2);
 
     if (prices.nextHoursCount == 0) {
-        drawCenteredText("-", 8, 184, 304, MUTED, 2, SURFACE);
+        drawSmoothCentered("-", "Title22", 20, 190, 280, MUTED, BG, 4);
         return;
     }
 
-    for (uint8_t i = 0; i < prices.nextHoursCount && i < 7; i++) {
+    uint8_t count = min<uint8_t>(prices.nextHoursCount, 6);
+    for (uint8_t i = 0; i < count; i++) {
         const HourPrice &item = prices.nextHours[i];
-        int16_t col = i < 4 ? 0 : 1;
-        int16_t row = i < 4 ? i : i - 4;
-        int16_t x = col == 0 ? 20 : 166;
-        int16_t y = 176 + row * 14;
+        int16_t centerX = 42 + i * 47;
+        int16_t x = centerX - 24;
         bool isCheapest = cheapest.valid && item.hour == cheapest.hour;
-        uint16_t rowColor = isCheapest ? OK : priceBandColor(item.price);
-        tft.fillCircle(x, y + 4, isCheapest ? 4 : 3, rowColor);
-        drawTextFit(String(item.hour), x + 16, y, i == 0 ? TEXT : MUTED, 1, SURFACE);
-        drawTextFit(priceValueText(item.price), x + 62, y, isCheapest ? OK : TEXT, 1, SURFACE);
-        if (isCheapest) drawTextFit("*", x + 110, y, OK, 1, SURFACE);
+        drawSmoothCentered(hourNumberText(item.hour), "Text14", x, 182, 48, MUTED, BG, 2);
+        drawSmoothCentered(priceValueText(item.price), "Text14", x, 206, 48, TEXT, BG, 2);
+        if (isCheapest) {
+            tft.fillRoundRect(centerX - 11, 228, 22, 2, 1, OK);
+        }
     }
 }
 
@@ -406,6 +662,9 @@ void drawPricePage() {
     PowerPriceData prices = powerPrices.snapshot();
     lastPriceDrawMs = millis();
     lastPriceLoading = prices.loading;
+    lastPriceDataUpdatedMs = prices.lastUpdatedMs;
+    lastClockMinuteOfDay = currentMinuteOfDay();
+    lastPriceHour = lastClockMinuteOfDay >= 0 ? lastClockMinuteOfDay / 60 : -1;
 
     drawShell("Strømpriser", prices.dateLabel.length() > 0 ? "ElprisenLigeNu " + prices.dateLabel : "ElprisenLigeNu");
 
@@ -448,6 +707,9 @@ void drawPricePageV2() {
     PowerPriceData prices = powerPrices.snapshot();
     lastPriceDrawMs = millis();
     lastPriceLoading = prices.loading;
+    lastPriceDataUpdatedMs = prices.lastUpdatedMs;
+    lastClockMinuteOfDay = currentMinuteOfDay();
+    lastPriceHour = lastClockMinuteOfDay >= 0 ? lastClockMinuteOfDay / 60 : -1;
 
     if (prices.loading) {
         drawPriceLoadingCard("HENTER DATA", "Forbinder og henter priser", ACCENT);
@@ -463,28 +725,19 @@ void drawPricePageV2() {
     drawMenuCard();
 
     HourPrice cheapest = cheapestUpcoming(prices);
+    HourPrice best = cheapest.valid ? cheapest : prices.cheapestToday;
     uint16_t nowColor = priceBandColor(prices.currentPrice);
-    drawSoftCard(8, 8, 196, 132);
-    drawBoltIcon(24, 22, nowColor);
-    drawTextFit("PRIS NU", 56, 28, MUTED, 1, SURFACE);
-    drawCenteredText(priceValueText(prices.currentPrice), 8, 54, 196, nowColor, 4, SURFACE);
-    drawCenteredText("kr/kWh", 8, 94, 196, TEXT, 1, SURFACE);
-    drawBadge(52, 114, 108, priceStatusText(prices.currentPrice), nowColor);
+    drawSmoothText("Pris nu", "Text14", 20, 18, MUTED, BG, 2);
+    drawLargePriceValue(prices.currentPrice, 0, 56, 222, TEXT, BG);
+    drawSmoothCentered("kr/kWh", "Text14", 6, 132, 214, MUTED, BG, 2);
 
-    uint16_t bestColor = cheapest.valid ? priceBandColor(cheapest.price) : ACCENT_DARK;
-    drawSoftCard(212, 52, 100, 88);
-    drawBulbIcon(226, 66, bestColor);
-    if (cheapest.valid) {
-        int minutes = minutesUntilHour(cheapest.hour);
-        drawTextFit(minutes <= 59 ? "Billigst om" : "Billigst igen", 222, 91, MUTED, 1, SURFACE);
-        if (minutes <= 59) {
-            drawCenteredText(String(minutes), 212, 105, 100, bestColor, 2, SURFACE);
-            drawCenteredText("min", 212, 124, 100, bestColor, 1, SURFACE);
-        } else {
-            drawCenteredText(hourText(cheapest), 212, 112, 100, bestColor, 2, SURFACE);
-        }
+    if (best.valid) {
+        drawSmoothCentered(insightStatusText(prices.currentPrice), "Text14", 224, 55, 86, nowColor, BG, 2);
+        drawSmoothCentered("Bedste time", "Text14", 224, 84, 86, MUTED, BG, 2);
+        drawSmoothCentered(hourText(best), "Title22", 218, 106, 96, TEXT, BG, 4);
+        drawSmoothCentered(priceValueText(best.price), "Text14", 214, 132, 104, MUTED, BG, 2);
     } else {
-        drawCenteredText("-", 212, 106, 100, MUTED, 2, SURFACE);
+        drawSmoothCentered("-", "Title22", 218, 104, 94, MUTED, BG, 4);
     }
 
     drawNextHoursCard(prices);
@@ -637,6 +890,8 @@ void App::begin() {
     pinMode(21, OUTPUT);
     digitalWrite(21, HIGH);
 
+    beginSdFonts();
+
     tft.init();
     tft.setRotation(1);
     tft.invertDisplay(true);
@@ -675,9 +930,23 @@ void App::update() {
         powerPrices.update();
 
         PowerPriceData prices = powerPrices.snapshot();
-        bool shouldRedraw = prices.loading != lastPriceLoading;
+        int minuteOfDay = currentMinuteOfDay();
+        int currentHour = minuteOfDay >= 0 ? minuteOfDay / 60 : -1;
+        bool clockMinuteChanged = minuteOfDay >= 0 && minuteOfDay != lastClockMinuteOfDay;
+        bool hourChanged = currentHour >= 0 && lastPriceHour >= 0 && currentHour != lastPriceHour;
+
+        if (hourChanged && !prices.loading) {
+            powerPrices.requestRefresh();
+            prices = powerPrices.snapshot();
+        }
+
+        bool shouldRedraw = prices.loading != lastPriceLoading || prices.lastUpdatedMs != lastPriceDataUpdatedMs || hourChanged;
         if (shouldRedraw) {
             drawPricePageV2();
+        } else if (clockMinuteChanged) {
+            lastClockMinuteOfDay = minuteOfDay;
+            lastPriceHour = currentHour;
+            drawMenuCard();
         }
 
         TouchPoint point = touch.read();
