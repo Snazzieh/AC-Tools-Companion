@@ -29,6 +29,8 @@ constexpr uint16_t TEXT = visible(TFT_WHITE);
 constexpr uint16_t MUTED = visible(0x7BEF);
 constexpr uint16_t ACCENT = 0x245F;
 constexpr uint16_t ACCENT_DARK = 0x21F5;
+constexpr uint16_t HOME_CONTROLLER = ACCENT_DARK;
+constexpr uint16_t HOME_PRICE = ACCENT;
 constexpr uint16_t OK = visible(0x5F0C);
 constexpr uint16_t WARN = visible(0xFDA0);
 constexpr uint16_t FAIL = visible(0xF986);
@@ -46,10 +48,12 @@ struct ButtonRect {
 
 const ButtonRect primaryButton{28, 198, 264, 35};
 const ButtonRect restartTouchArea{0, 0, 320, 240};
-const ButtonRect controllerAppButton{28, 98, 264, 32};
-const ButtonRect priceAppButton{28, 156, 264, 32};
-const ButtonRect controllerHomeTouchArea{0, 0, 320, 120};
-const ButtonRect priceHomeTouchArea{0, 120, 320, 120};
+const ButtonRect controllerAppButton{24, 50, 272, 43};
+const ButtonRect priceAppButton{24, 105, 272, 43};
+const ButtonRect portfolioAppButton{24, 160, 272, 43};
+const ButtonRect controllerHomeTouchArea{0, 34, 320, 66};
+const ButtonRect priceHomeTouchArea{0, 100, 320, 66};
+const ButtonRect portfolioHomeTouchArea{0, 166, 320, 74};
 const ButtonRect priceMenuButton{270, 4, 46, 42};
 const ButtonRect priceMenuVisualButton{270, 4, 46, 42};
 
@@ -57,7 +61,8 @@ enum class ScreenMode {
     Home,
     Running,
     Done,
-    Price
+    Price,
+    Portfolio
 };
 
 ScreenMode screenMode = ScreenMode::Home;
@@ -75,12 +80,48 @@ int lastPriceHour = -1;
 bool sdFontsReady = false;
 bool sdChecked = false;
 
+struct PerformanceItem {
+    const char *label;
+    float percent;
+    int32_t dkk;
+};
+
+struct Winner {
+    const char *symbol;
+    const char *name;
+    float dayPercent;
+    int32_t dayDkk;
+};
+
+struct PortfolioSnapshot {
+    uint32_t totalValue;
+    PerformanceItem performance[5];
+    Winner winners[3];
+};
+
+PortfolioSnapshot portfolio = {
+    1357594,
+    {
+        {"I dag", 0.00f, 0},
+        {"1 uge", 1.94f, 23914},
+        {"1 maaned", -0.49f, -6205},
+        {"6 mdr", 6.56f, 84279},
+        {"1 aar", 6.83f, 86992}
+    },
+    {
+        {"NVDA", "NVIDIA", 2.31f, 3456},
+        {"AAPL", "Apple", 1.84f, 812},
+        {"AMZN", "Amazon", 1.12f, 274}
+    }
+};
 bool inRect(const TouchPoint &point, const ButtonRect &rect) {
     return point.pressed && point.x >= rect.x && point.x < rect.x + rect.w && point.y >= rect.y && point.y < rect.y + rect.h;
 }
 
 void drawSmoothText(const String &text, const char *fontName, int16_t x, int16_t y, uint16_t color, uint16_t bg, uint8_t fallbackFont);
 void drawSmoothCentered(const String &text, const char *fontName, int16_t x, int16_t y, int16_t w, uint16_t color, uint16_t bg, uint8_t fallbackFont);
+void drawSmoothStrompriserCentered(int16_t x, int16_t y, int16_t w, uint16_t color, uint16_t bg);
+void drawSmoothPortefoljeCentered(int16_t x, int16_t y, int16_t w, uint16_t color, uint16_t bg);
 
 int16_t textWidth(const String &text, uint8_t size) {
     return text.length() * 6 * size;
@@ -169,9 +210,18 @@ void drawSmallButton(const ButtonRect &rect, const String &label, uint16_t fill,
 }
 
 void drawHomeButton(const ButtonRect &rect, const String &label, uint16_t fill) {
-    tft.fillRoundRect(rect.x, rect.y, rect.w, rect.h, 7, fill);
-    tft.drawRoundRect(rect.x, rect.y, rect.w, rect.h, 7, PANEL_2);
-    drawSmoothCentered(label, "Text14", rect.x, rect.y + 9, rect.w, TEXT, fill, 2);
+    tft.fillRoundRect(rect.x, rect.y, rect.w, rect.h, 9, fill);
+    tft.drawRoundRect(rect.x, rect.y, rect.w, rect.h, 9, PANEL_2);
+    int16_t textY = rect.y + (rect.h - 18) / 2;
+    if (label == "Strømpriser") {
+        drawSmoothStrompriserCentered(rect.x, textY, rect.w, TEXT, fill);
+        return;
+    }
+    if (label == "Portefolje") {
+        drawSmoothPortefoljeCentered(rect.x, textY, rect.w, TEXT, fill);
+        return;
+    }
+    drawSmoothCentered(label, "Text14", rect.x, textY, rect.w, TEXT, fill, 2);
 }
 
 void drawTinyText(const String &text, int16_t x, int16_t y, uint16_t color, uint16_t bg = BG) {
@@ -223,11 +273,10 @@ void drawHome() {
     flowRequested = false;
     flowComplete = false;
 
-    drawShell("AC Tools Companion", "Choose app.");
-    drawPanel(14, 82, 292, 122);
-    drawTinyText("BLE / Hotspot / WiFi / EXOsocket gateway", 28, 136, MUTED, SURFACE);
-    drawHomeButton(controllerAppButton, "Controller", ACCENT_DARK);
-    drawHomeButton(priceAppButton, "StrQmpriser", ACCENT);
+    drawShell("", "");
+    drawHomeButton(controllerAppButton, "Controller", HOME_CONTROLLER);
+    drawHomeButton(priceAppButton, "Strømpriser", HOME_PRICE);
+    drawHomeButton(portfolioAppButton, "Portefolje", HOME_CONTROLLER);
 }
 
 void drawProgress(const String &title, const String &line1, const String &line2 = "", uint8_t percent = 0, const String &label = "") {
@@ -351,6 +400,7 @@ int minutesUntilHour(uint8_t hour) {
 
 void drawModernText(const String &text, int16_t x, int16_t y, uint16_t color, uint8_t font, uint16_t bg);
 void drawModernCentered(const String &text, int16_t x, int16_t y, int16_t w, uint16_t color, uint8_t font, uint16_t bg);
+void drawSoftCard(int16_t x, int16_t y, int16_t w, int16_t h);
 
 bool smoothFontExists(const char *name) {
     if (!sdFontsReady) return false;
@@ -453,7 +503,59 @@ void drawSmoothCentered(const String &text, const char *fontName, int16_t x, int
 
     drawModernCentered(text, x, y, w, color, fallbackFont, bg);
 }
+void drawSmoothStrompriserCentered(int16_t x, int16_t y, int16_t w, uint16_t color, uint16_t bg) {
+    if (!smoothFontExists("Text14")) {
+        drawCenteredText("Strømpriser", x, y, w, color, 1, bg);
+        return;
+    }
 
+    tft.setTextDatum(TL_DATUM);
+    tft.setTextColor(color, bg);
+    tft.loadFont("Text14", SD);
+
+    int16_t strWidth = tft.textWidth("Str");
+    int16_t oWidth = tft.textWidth("o");
+    int16_t totalWidth = strWidth + oWidth + tft.textWidth("mpriser");
+    int16_t startX = x + (w - totalWidth) / 2;
+    if (startX < x + 4) startX = x + 4;
+
+    tft.drawString("Str", startX, y);
+    tft.drawString("o", startX + strWidth, y);
+    tft.drawString("mpriser", startX + strWidth + oWidth, y);
+    tft.unloadFont();
+    tft.setTextDatum(TL_DATUM);
+
+    int16_t ox = startX + strWidth;
+    int16_t slashBottomX = ox + 1;
+    int16_t slashTopX = ox + oWidth + 1;
+    tft.drawLine(slashBottomX, y + 11, slashTopX, y + 3, color);
+}
+
+void drawSmoothPortefoljeCentered(int16_t x, int16_t y, int16_t w, uint16_t color, uint16_t bg) {
+    if (!smoothFontExists("Text14")) {
+        drawCenteredText("Portefolje", x, y, w, color, 1, bg);
+        return;
+    }
+
+    tft.setTextDatum(TL_DATUM);
+    tft.setTextColor(color, bg);
+    tft.loadFont("Text14", SD);
+
+    int16_t prefixWidth = tft.textWidth("Portef");
+    int16_t oWidth = tft.textWidth("o");
+    int16_t totalWidth = prefixWidth + oWidth + tft.textWidth("lje");
+    int16_t startX = x + (w - totalWidth) / 2;
+    if (startX < x + 4) startX = x + 4;
+
+    tft.drawString("Portef", startX, y);
+    tft.drawString("o", startX + prefixWidth, y);
+    tft.drawString("lje", startX + prefixWidth + oWidth, y);
+    tft.unloadFont();
+    tft.setTextDatum(TL_DATUM);
+
+    int16_t ox = startX + prefixWidth;
+    tft.drawLine(ox + 1, y + 11, ox + oWidth + 1, y + 3, color);
+}
 void drawModernText(const String &text, int16_t x, int16_t y, uint16_t color, uint8_t font, uint16_t bg = BG) {
     tft.setTextDatum(TL_DATUM);
     tft.setTextColor(color, bg);
@@ -511,6 +613,124 @@ void drawTablePriceValue(float price, int16_t x, int16_t y, uint16_t color, uint
     drawSmoothText(priceValueText(price), "Text14", x, y, color, bg, 2);
 }
 
+String portfolioCurrencyText(int32_t value) {
+    long rounded = value;
+    bool negative = rounded < 0;
+    if (negative) rounded = -rounded;
+
+    String raw = String(rounded);
+    String formatted;
+    uint8_t group = 0;
+    for (int i = raw.length() - 1; i >= 0; i--) {
+        if (group == 3) {
+            formatted = "." + formatted;
+            group = 0;
+        }
+        formatted = raw.substring(i, i + 1) + formatted;
+        group++;
+    }
+
+    if (negative) formatted = "-" + formatted;
+    formatted += " kr";
+    return formatted;
+}
+
+String portfolioDeltaText(int32_t value) {
+    if (value == 0) return "0 kr";
+    String text = portfolioCurrencyText(value);
+    if (value > 0) return "+" + text;
+    return text;
+}
+
+String portfolioPercentText(float value) {
+    String text = String(fabs(value), 2);
+    text.replace(".", ",");
+    if (value > 0.0f) return "+" + text + "%";
+    if (value < 0.0f) return "-" + text + "%";
+    return text + "%";
+}
+
+uint16_t portfolioChangeColor(float value) {
+    if (value > 0.0f) return OK;
+    if (value < 0.0f) return FAIL;
+    return MUTED;
+}
+
+void drawSmoothRightText(const String &text, const char *fontName, int16_t x, int16_t y, int16_t w, uint16_t color, uint16_t bg, uint8_t fallbackFont) {
+    if (smoothFontExists(fontName)) {
+        tft.setTextDatum(TR_DATUM);
+        tft.setTextColor(color, bg);
+        tft.loadFont(fontName, SD);
+        tft.drawString(text, x + w, y);
+        tft.unloadFont();
+        tft.setTextDatum(TL_DATUM);
+        return;
+    }
+
+    tft.setTextDatum(TR_DATUM);
+    tft.setTextColor(color, bg);
+    tft.setTextFont(fallbackFont);
+    tft.setTextSize(1);
+    tft.drawString(text, x + w, y, fallbackFont);
+    tft.setTextDatum(TL_DATUM);
+    tft.setTextFont(1);
+}
+
+void drawPortfolioTitle(int16_t x, int16_t y, uint16_t color, uint16_t bg) {
+    if (!smoothFontExists("Title22")) {
+        drawModernText("PORTEFOLJE", x, y, color, 4, bg);
+        return;
+    }
+
+    tft.setTextDatum(TL_DATUM);
+    tft.setTextColor(color, bg);
+    tft.loadFont("Title22", SD);
+    int16_t prefixWidth = tft.textWidth("PORTF");
+    int16_t oWidth = tft.textWidth("O");
+    tft.drawString("PORTF", x, y);
+    tft.drawString("O", x + prefixWidth, y);
+    tft.drawString("LJE", x + prefixWidth + oWidth, y);
+    tft.unloadFont();
+    int16_t ox = x + prefixWidth;
+    tft.drawLine(ox + 3, y + 13, ox + oWidth - 6, y - 3, color);
+}
+
+void drawPortfolioMetricRow(const PerformanceItem &item, int16_t y) {
+    drawSmoothText(item.label, "Text14", 30, y, MUTED, SURFACE, 2);
+    drawSmoothRightText(portfolioDeltaText(item.dkk), "Text14", 108, y, 86, MUTED, SURFACE, 2);
+    drawSmoothRightText(portfolioPercentText(item.percent), "Text14", 206, y, 84, portfolioChangeColor(item.percent), SURFACE, 2);
+}
+
+void drawPortfolioWinnerRow(const Winner &winner, int16_t y) {
+    String label = String(winner.symbol) + " " + winner.name;
+    drawSmoothText(shortText(label, 14), "Text14", 30, y, TEXT, SURFACE, 2);
+    drawSmoothRightText(portfolioDeltaText(winner.dayDkk), "Text14", 122, y, 72, MUTED, SURFACE, 2);
+    drawSmoothRightText(portfolioPercentText(winner.dayPercent), "Text14", 206, y, 84, portfolioChangeColor(winner.dayPercent), SURFACE, 2);
+}
+
+void drawPortfolioPage(const PortfolioSnapshot &snapshot) {
+    screenMode = ScreenMode::Portfolio;
+    tft.fillScreen(BG);
+
+    drawPortfolioTitle(20, 14, TEXT, BG);
+    drawSmoothCentered(portfolioCurrencyText(static_cast<int32_t>(snapshot.totalValue)), "Title22", 20, 44, 280, TEXT, BG, 4);
+
+    drawSoftCard(20, 78, 280, 88);
+    for (uint8_t i = 0; i < 5; i++) {
+        drawPortfolioMetricRow(snapshot.performance[i], 90 + i * 14);
+    }
+
+    drawSmoothText("Dagens vindere", "Text14", 24, 178, MUTED, BG, 2);
+    drawSoftCard(20, 196, 280, 36);
+    for (uint8_t i = 0; i < 3; i++) {
+        drawPortfolioWinnerRow(snapshot.winners[i], 202 + i * 12);
+    }
+
+}
+
+void drawPortfolioPage() {
+    drawPortfolioPage(portfolio);
+}
 void drawThickLine(int16_t x0, int16_t y0, int16_t x1, int16_t y1, uint16_t color) {
     tft.drawLine(x0, y0, x1, y1, color);
     tft.drawLine(x0 + 1, y0, x1 + 1, y1, color);
@@ -917,6 +1137,8 @@ void App::update() {
             } else if (inRect(point, priceHomeTouchArea)) {
                 powerPrices.requestRefresh();
                 drawPricePageV2();
+            } else if (inRect(point, portfolioHomeTouchArea)) {
+                drawPortfolioPage();
             }
         }
 
@@ -954,6 +1176,11 @@ void App::update() {
             drawMenuCard();
         }
 
+        TouchPoint point = touch.read();
+        if (inRect(point, priceMenuButton) && touch.wasTapped()) {
+            drawHome();
+        }
+    } else if (screenMode == ScreenMode::Portfolio) {
         TouchPoint point = touch.read();
         if (inRect(point, priceMenuButton) && touch.wasTapped()) {
             drawHome();

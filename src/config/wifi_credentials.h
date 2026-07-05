@@ -8,6 +8,8 @@ struct WifiCredential {
 constexpr WifiCredential WIFI_NETWORKS[] = {
     {"Tullenet", "snazzy12"},
     {"Bambulab", "systemair12"},
+    {"Skolesvinget_62", "snazzy12"},
+
 };
 
 constexpr int WIFI_NETWORK_COUNT = sizeof(WIFI_NETWORKS) / sizeof(WIFI_NETWORKS[0]);
