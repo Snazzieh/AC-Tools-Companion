@@ -6,7 +6,7 @@ xset s noblank
 openbox-session &
 sleep 2
 
-cd /home/s/accesspi || exit 1
+cd $HOME/accesspi || exit 1
 . .venv/bin/activate
 
 if command -v dbus-run-session >/dev/null 2>&1; then

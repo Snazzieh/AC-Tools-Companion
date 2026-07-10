@@ -6,87 +6,87 @@ mkdir -p "$HOME/.local/bin"
 cat > "$HOME/.local/bin/access" <<'EOF'
 #!/bin/sh
 set -eu
-cd /home/s/accesspi || exit 1
+cd $HOME/accesspi || exit 1
 . .venv/bin/activate
 python -B accesspi.py connect --address E8:6B:EA:F3:99:1E --skip-exosocket "$@"
 python -B accesspi.py wait-web --ip 192.168.254.1 --timeout 120
-exec startx /home/s/accesspi/run-kiosk.sh
+exec startx $HOME/accesspi/run-kiosk.sh
 EOF
 
 cat > "$HOME/.local/bin/accesslite" <<'EOF'
 #!/bin/sh
 set -eu
-cd /home/s/accesspi || exit 1
+cd $HOME/accesspi || exit 1
 . .venv/bin/activate
 python -B accesspi.py connect --address E8:6B:EA:F3:99:1E --skip-exosocket "$@"
 python -B accesspi.py wait-web --ip 192.168.254.1 --timeout 120
-exec env ACCESSPI_BROWSER=epiphany startx /home/s/accesspi/run-kiosk.sh
+exec env ACCESSPI_BROWSER=epiphany startx $HOME/accesspi/run-kiosk.sh
 EOF
 
 cat > "$HOME/.local/bin/accessdirect" <<'EOF'
 #!/bin/sh
 set -eu
-cd /home/s/accesspi || exit 1
+cd $HOME/accesspi || exit 1
 . .venv/bin/activate
 python -B accesspi.py connect --address E8:6B:EA:F3:99:1E --skip-exosocket "$@"
 python -B accesspi.py wait-web --ip 192.168.254.1 --timeout 120
-exec startx /home/s/accesspi/run-direct.sh
+exec startx $HOME/accesspi/run-direct.sh
 EOF
 
 cat > "$HOME/.local/bin/accessdirectlite" <<'EOF'
 #!/bin/sh
 set -eu
-cd /home/s/accesspi || exit 1
+cd $HOME/accesspi || exit 1
 . .venv/bin/activate
 python -B accesspi.py connect --address E8:6B:EA:F3:99:1E --skip-exosocket "$@"
 python -B accesspi.py wait-web --ip 192.168.254.1 --timeout 120
-exec env ACCESSPI_BROWSER=epiphany startx /home/s/accesspi/run-direct.sh
+exec env ACCESSPI_BROWSER=epiphany startx $HOME/accesspi/run-direct.sh
 EOF
 
 cat > "$HOME/.local/bin/accesswebview" <<'EOF'
 #!/bin/sh
 set -eu
-cd /home/s/accesspi || exit 1
+cd $HOME/accesspi || exit 1
 . .venv/bin/activate
 python -B accesspi.py connect --address E8:6B:EA:F3:99:1E --skip-exosocket "$@"
 python -B accesspi.py wait-web --ip 192.168.254.1 --timeout 120
-exec env ACCESSPI_WEBVIEW_URL=http://192.168.254.1/ startx /home/s/accesspi/run-webview.sh
+exec env ACCESSPI_WEBVIEW_URL=http://192.168.254.1/ startx $HOME/accesspi/run-webview.sh
 EOF
 
 cat > "$HOME/.local/bin/accesswebviewproxy" <<'EOF'
 #!/bin/sh
 set -eu
-cd /home/s/accesspi || exit 1
+cd $HOME/accesspi || exit 1
 . .venv/bin/activate
 python -B accesspi.py connect --address E8:6B:EA:F3:99:1E --skip-exosocket "$@"
 python -B accesspi.py wait-web --ip 192.168.254.1 --timeout 120
-exec env ACCESSPI_WEBVIEW_URL=http://127.0.0.1:8080/ ACCESSPI_BROWSER=webview startx /home/s/accesspi/run-webview-proxy.sh
+exec env ACCESSPI_WEBVIEW_URL=http://127.0.0.1:8080/ ACCESSPI_BROWSER=webview startx $HOME/accesspi/run-webview-proxy.sh
 EOF
 
 cat > "$HOME/.local/bin/kiosk" <<'EOF'
 #!/bin/sh
-cd /home/s/accesspi || exit 1
+cd $HOME/accesspi || exit 1
 . .venv/bin/activate
-exec startx /home/s/accesspi/run-kiosk.sh
+exec startx $HOME/accesspi/run-kiosk.sh
 EOF
 
 cat > "$HOME/.local/bin/kiosklite" <<'EOF'
 #!/bin/sh
-cd /home/s/accesspi || exit 1
+cd $HOME/accesspi || exit 1
 . .venv/bin/activate
-exec env ACCESSPI_BROWSER=epiphany startx /home/s/accesspi/run-kiosk.sh
+exec env ACCESSPI_BROWSER=epiphany startx $HOME/accesspi/run-kiosk.sh
 EOF
 
 cat > "$HOME/.local/bin/proxy" <<'EOF'
 #!/bin/sh
-cd /home/s/accesspi || exit 1
+cd $HOME/accesspi || exit 1
 . .venv/bin/activate
 exec python -B accesspi.py proxy "$@"
 EOF
 
 cat > "$HOME/.local/bin/scanaccess" <<'EOF'
 #!/bin/sh
-cd /home/s/accesspi || exit 1
+cd $HOME/accesspi || exit 1
 . .venv/bin/activate
 exec python -B accesspi.py scan "$@"
 EOF
