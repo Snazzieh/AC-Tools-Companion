@@ -1,0 +1,5 @@
+bleak
+msgpack
+websockets
+pycryptodome
+aiohttp
