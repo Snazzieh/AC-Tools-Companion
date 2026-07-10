@@ -8,7 +8,7 @@ cat > "$HOME/.local/bin/access" <<'EOF'
 set -eu
 cd $HOME/accesspi || exit 1
 . .venv/bin/activate
-python -B accesspi.py connect --address E8:6B:EA:F3:99:1E --skip-exosocket "$@"
+python -B accesspi.py connect --skip-exosocket "$@"
 python -B accesspi.py wait-web --ip 192.168.254.1 --timeout 120
 exec startx $HOME/accesspi/run-kiosk.sh
 EOF
@@ -18,7 +18,7 @@ cat > "$HOME/.local/bin/accesslite" <<'EOF'
 set -eu
 cd $HOME/accesspi || exit 1
 . .venv/bin/activate
-python -B accesspi.py connect --address E8:6B:EA:F3:99:1E --skip-exosocket "$@"
+python -B accesspi.py connect --skip-exosocket "$@"
 python -B accesspi.py wait-web --ip 192.168.254.1 --timeout 120
 exec env ACCESSPI_BROWSER=epiphany startx $HOME/accesspi/run-kiosk.sh
 EOF
@@ -28,7 +28,7 @@ cat > "$HOME/.local/bin/accessdirect" <<'EOF'
 set -eu
 cd $HOME/accesspi || exit 1
 . .venv/bin/activate
-python -B accesspi.py connect --address E8:6B:EA:F3:99:1E --skip-exosocket "$@"
+python -B accesspi.py connect --skip-exosocket "$@"
 python -B accesspi.py wait-web --ip 192.168.254.1 --timeout 120
 exec startx $HOME/accesspi/run-direct.sh
 EOF
@@ -38,7 +38,7 @@ cat > "$HOME/.local/bin/accessdirectlite" <<'EOF'
 set -eu
 cd $HOME/accesspi || exit 1
 . .venv/bin/activate
-python -B accesspi.py connect --address E8:6B:EA:F3:99:1E --skip-exosocket "$@"
+python -B accesspi.py connect --skip-exosocket "$@"
 python -B accesspi.py wait-web --ip 192.168.254.1 --timeout 120
 exec env ACCESSPI_BROWSER=epiphany startx $HOME/accesspi/run-direct.sh
 EOF
@@ -48,7 +48,7 @@ cat > "$HOME/.local/bin/accesswebview" <<'EOF'
 set -eu
 cd $HOME/accesspi || exit 1
 . .venv/bin/activate
-python -B accesspi.py connect --address E8:6B:EA:F3:99:1E --skip-exosocket "$@"
+python -B accesspi.py connect --skip-exosocket "$@"
 python -B accesspi.py wait-web --ip 192.168.254.1 --timeout 120
 exec env ACCESSPI_WEBVIEW_URL=http://192.168.254.1/ startx $HOME/accesspi/run-webview.sh
 EOF
@@ -58,7 +58,7 @@ cat > "$HOME/.local/bin/accesswebviewproxy" <<'EOF'
 set -eu
 cd $HOME/accesspi || exit 1
 . .venv/bin/activate
-python -B accesspi.py connect --address E8:6B:EA:F3:99:1E --skip-exosocket "$@"
+python -B accesspi.py connect --skip-exosocket "$@"
 python -B accesspi.py wait-web --ip 192.168.254.1 --timeout 120
 exec env ACCESSPI_WEBVIEW_URL=http://127.0.0.1:8080/ ACCESSPI_BROWSER=webview startx $HOME/accesspi/run-webview-proxy.sh
 EOF
