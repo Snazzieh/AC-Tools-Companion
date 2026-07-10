@@ -1,13 +1,15 @@
 $ErrorActionPreference = "Stop"
 
 $piHost = if ($args.Count -ge 1) { $args[0] } else { "172.20.10.2" }
-$piTarget = "s@$piHost`:~/accesspi/"
+$piUser = if ($args.Count -ge 2) { $args[1] } else { "s" }
+$piLogin = "$piUser@$piHost"
+$piTarget = "$piLogin`:~/accesspi/"
 $ssh = "C:\Windows\System32\OpenSSH\ssh.exe"
 $scp = "C:\Windows\System32\OpenSSH\scp.exe"
 $here = Split-Path -Parent $MyInvocation.MyCommand.Path
 
-Write-Host "Creating ~/accesspi on $piHost..."
-& $ssh "s@$piHost" "mkdir -p ~/accesspi"
+Write-Host "Creating ~/accesspi on $piLogin..."
+& $ssh $piLogin "mkdir -p ~/accesspi"
 
 Write-Host "Copying AccessPi files..."
 & $scp `
@@ -23,6 +25,6 @@ Write-Host "Copying AccessPi files..."
     $piTarget
 
 Write-Host "Installing short commands..."
-& $ssh "s@$piHost" "cd ~/accesspi && chmod +x run-kiosk.sh run-direct.sh run-webview.sh run-webview-proxy.sh access_webview.py install-commands.sh && ./install-commands.sh"
+& $ssh $piLogin "cd ~/accesspi && chmod +x run-kiosk.sh run-direct.sh run-webview.sh run-webview-proxy.sh access_webview.py install-commands.sh && ./install-commands.sh"
 
 Write-Host "Done. On the Pi you can now run: access, accesslite, accessdirect, accessdirectlite, accesswebview, accesswebviewproxy, kiosk, kiosklite, proxy, scanaccess, iphone, statusaccess, stopaccess"
